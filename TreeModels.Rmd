@@ -1,0 +1,540 @@
+---
+title: "Homework Set 8 - Tree  Models"
+author: "Xuezhi Wu"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+#do not change this code
+knitr::opts_chunk$set(echo = TRUE,collapse=TRUE)
+options(width=200)
+options(digits=5)
+library(regclass)  #All the packages needed for this activity
+library(rpart)
+library(randomForest)
+library(gbm)
+library(caret)
+library(pROC)
+
+#The following 4 libraries are optional.  If you are going to do parallelization or xgboost, install
+#these packages and uncomment these lines
+#library(parallel)
+#library(doParallel)
+#library(xgboost)
+#library(Matrix)
+
+#scale_dataframe takes a dataframe DATA and replaces all numerical columns with
+#scaled version that have a mean of 0 and standard deviation of 1
+scale_dataframe <- function(DATA) {
+  column.classes <- unlist(lapply(DATA,FUN=class))  
+  numeric.columns <- which(column.classes %in% c("numeric","integer"))  
+  if( length(numeric.columns)==0 ) { return(DATA) }
+  DATA[,numeric.columns] <- as.data.frame( scale(DATA[,numeric.columns]) )
+  return(DATA)
+}
+
+
+```
+
+
+***************
+***************
+***************
+
+##Task 1:  Regression
+
+The `Electricity.csv` datafile contains the daily electricity usage (`Usage`) of about 63 different households over the span of about two years.  Of particular interest is developing a predictive model for usage.  It is known that the most important factor that drives electricity usage is temperature (these households have electric heat and air-conditioning), but the relationship is complex.
+
+* `ID` - household ID
+
+* `Usage` - daily electricity usage of a household
+
+* `PayPlan` - Yes or No depending on whether they have signed up for a payment plan option
+
+* `DaylightHours` - the number of hours of daylight for that day
+
+* `coolinghours` - technical term that describes how hard an AC unit has to work (if at 3pm is 78 degrees, then that hour's contribution to `coolinghours` is 78-65=13; this is summed over all hours of the day, ignoring hours that are below 65)
+
+* `heatinghours` - technical term that describes how hard an electric unit has to work (if at 3pm is 32 degrees, then that hour's contribution to `heatinghours` is 65-32=33; this is summed over all hours of the day, ignoring hours that are above 65)
+
+* `HoursAbove65` - total number of hours for that day where temperature exceeded 65
+
+* `HoursBelow65` - total number of hours for that day where temperature was below 65
+
+* `low` - low temperature of the day
+
+* `high` - high temperature of the day
+
+* `median` - median value of the 24 hourly temperatures of the day
+
+* `mean` - mean value of the 24 hourly temperatures of the day
+
+* `q1` - 25th percentile of the 24 hourly temperatures of the day
+
+* `q3` - 75th percentile value of the 24 hourly temperatures of the day
+
+* `day` - day of week
+
+* `YearMonth` - year and month of that day
+
+
+1.  Data preprocessing steps  
+
+* Read in `Electricity.csv` with `read.csv`, calling the dataframe `ELECTRICITY`.
+
+* Run the lines of code that generate a "smoothed scatterplot" showing the relationship between Usage and average daily temperature and adds a curve describing the trend.
+
+*  Make (but don't include) a histogram of `Usage`.  It's quite skewed, so let's replace the values of `Usage` with `log10(Usage)`.  
+
+*  Overwrite `ELECTRICITY` by taking a subset of only days that are Sunday (`Sun`)
+
+*  NULL out `day`
+
+*  NULL out `ID` 
+
+*  NULL out `YearMonth` 
+
+*  Scale the `ELECTRICITY` dataframe by running `ELECTRICITY <- scale_dataframe(ELECTRICITY)`
+
+*  Overwrite `ELECTRICITY` by running `ELECTRICITY <- droplevels(ELECTRICITY)` so that levels that no longer appear in the data are erased.
+
+*  Verify `dim` and row 2018 are what is provided below
+
+*  We will use the entirety of the `ELECTRICITY` dataframe to explore different models.  Since we would base our final decision on whichever model has the lowest generalization error, this is ok.  By neglecting to make a holdout sample we lose the ability to verify the generalization is about what we expected (and that the model isn't overfit)
+
+```{r Task1.1}
+ELECTRICITY <- read.csv("Electricity.csv")
+smoothScatter(ELECTRICITY$mean,ELECTRICITY$Usage)
+points(predict(smooth.spline(ELECTRICITY$mean,ELECTRICITY$Usage,lambda=.01)),col="red",pch=20,cex=0.7)
+ELECTRICITY$Usage<-log10(ELECTRICITY$Usage)
+ELECTRICITY<-subset(ELECTRICITY,ELECTRICITY$day=="Sun")
+ELECTRICITY<-ELECTRICITY[,-c(14,15,16)]
+ELECTRICITY <- scale_dataframe(ELECTRICITY)
+ELECTRICITY <- droplevels(ELECTRICITY)
+dim(ELECTRICITY)
+#[1] 7769   13
+ELECTRICITY[2018,]
+#          Usage PayPlan DaylightHours coolinghours heatinghours HoursAbove65 HoursBelow65       low        high
+#14084 -1.325864      No     0.5938966   -0.7611043    0.2311614    -0.657789      0.67132 -1.102158 -0.09282827
+#           median       mean         q1         q3 
+#14084 -0.05693108 -0.4304372 -0.8957729 -0.1078245 
+```
+
+
+
+
+2.  Your plot in (1) shows that the relationship between mean temperature and usage is nonlinear.  In fact we *know* this relationship isn't well-described by a straight (on very cold or very warm days Usage should be high, but on days where the average temperature is near 65 the Usage should be low since heat/air would mostly be turned off).  
+
+Let's fit a linear regression model anyway predicting `Usage` from all available predictors (no interactions, no polynomial terms) in the hopes that an obviously wrong model might still be useful (plus there are a bunch of other measures of temperature that may allow us to model the relationship).  
+
+Set up `fitControl` so that vanilla 5-fold crossvalidation is being used to estimate the generalization error.  Ignore warnings about `prediction from a rank-deficient fit may be misleading`.  Print out the `$results` component of the object created by `train` as well as the results of running `varImp()`.  Remember to `set.seed(474)` on the same line as `train` but immediately before running it.
+
+```{r Task1.2}
+fitControl <- trainControl(method="cv",number=5) 
+set.seed(474);MODEL<- train(Usage~.,data=ELECTRICITY,method="glm",trControl=fitControl)
+MODEL$results
+varImp(MODEL)
+```
+
+
+
+
+3.  Fit a regularized regression model with `glmnetGrid <- expand.grid(alpha = seq(0,1,.1),lambda = 10^seq(-5,-2,length=30))`, naming the object created by running `train` to be `GLMNET`.  Print to the screen the results of running `GLMNET$results[rownames(GLMNET$bestTune),]` (the best tuning parameters found) and run `plot(GLMNET)` to see how the estimated generalization error varies with the tuning parameters.
+
+a.  You should find that the selected model has `alpha=1`, which is the lasso.  What predictors (if any) have coefficients that are set to 0 and are thus "thrown out" of the model?
+
+**Response:** Variable low, high, median, mean, q1 and q3 should be thrown out of the model. 
+
+b.  Regularization usually helps out regression models by quite a bit, what about here?
+
+**Response:**  The RMSE here is 0.94041 which is a little bit better than the RMSE 0.94071 from linear regression model. However, based on 1 SD rule, there is not significant difference between these two models.
+
+
+```{r Task1.3}
+glmnetGrid <- expand.grid(alpha = seq(0,1,.1),lambda = 10^seq(-5,-2,length=30))   
+set.seed(474); GLMNET <- train(Usage~.,data=ELECTRICITY,method='glmnet',trControl=fitControl, tuneGrid=glmnetGrid)
+GLMNET$bestTune
+GLMNET$results[ rownames(GLMNET$bestTune), ]
+plot(GLMNET)
+round( coef(GLMNET$finalModel,GLMNET$bestTune$lambda),digits = 2 )
+```
+
+
+
+
+
+4.  Estimate the generalization error of a nearest-neighbor model.  Use `knnGrid <- expand.grid(k=c(1,10,50,100,150))`.  If you wish to use parallelization here it will speed up the fitting, but it is not required.  Save the output of `train` to `KNN` and run `plot(KNN)` to see how the estimated generalization error changes with `k`, and  `KNN$results[rownames(KNN$bestTune),]` to show the row containing the best choice of k.  Is this model (when using the optimal choice of k) better than the linear regression model?  Explain.
+
+```{r Task1.4}
+library(doParallel)
+knnGrid <- expand.grid(k=c(1,10,50,100,150))
+
+cluster <- makeCluster(detectCores() - 1, outfile = "") 
+registerDoParallel(cluster)
+fitControl <- trainControl(method = "cv",number = 5, allowParallel = TRUE)
+set.seed(474); KNN <- train(Usage~.,data=ELECTRICITY,method="knn",trControl=fitControl,tuneGrid=knnGrid)
+stopCluster(cluster)
+registerDoSEQ()
+
+plot(KNN)
+KNN$results[rownames(KNN$bestTune),]  #100 0.9468181
+```
+
+**Response:** The RMSE here is 0.94682, which is not better than RMSE 0.94071 the linear regression model.However, based on 1 SD rule, there is not significant difference between these two models.
+
+
+
+
+
+
+5.  Estimate the generalization error of a vanilla partition tree.  Use `rpartGrid <- expand.grid(cp=10^seq(-4,-2,length=50))`. Save the output of `train` to `RPART`.
+
+
+```{r Task1.5}
+rpartGrid <- expand.grid(cp=10^seq(-4,-2,length=50))
+set.seed(474); RPART <- train(Usage~.,data=ELECTRICITY,method="rpart",trControl=fitControl,tuneGrid=rpartGrid)
+plot(RPART)
+RPART$results[rownames(RPART$bestTune),]
+varImp(RPART)
+TREE <- rpart(Usage~.,data=ELECTRICITY,cp=0.003)
+visualize_model(TREE)
+visualize_relationship(TREE,interest="mean",on=ELECTRICITY,marginal=TRUE)
+```
+
+a.  Include `plot(RPART)`, which will show how the choice of cp affects the estimated generalization error.
+
+b.  Include `RPART$results[rownames(RPART$bestTune),]`, which contains the optimal choice of cp and its estimated generalization error.
+
+c.  Include `varImp(RPART)`.  You should find that the list of important predictors looks QUITE a bit different compared to the list produced by the vanilla linear regression.  Explain why this list likely provides a much fairer assessment than the one produced by the linear regression.
+
+**Response:**  Because partition model deal with a single vairbale at a time, partition model will focus on every variable. However, linear regression model condiser the overall perfomance, so there would be one or two vairbales have high overall performance score. 
+
+
+d.  Is this model (when using the optimal choice of cp) better than the linear regression model?  Explain.
+
+**Response:** No, RMSE of this model is 0.9409 which is larger than RMSE of the vanilla linear regression model.
+
+
+e.  Manually fit a vanilla partition model using `rpart` with a cp of .003.  Run `visualize_model` (in `regclass`) on the tree to see what it looks like and `visualize_relationship(TREE,interest="mean",on=ELECTRICITY,marginal=TRUE)` to see how the model has captured the inherent nonlinearity in the relationship between Usage and mean temperature.  What would the predicted value of Usage be for someone who IS NOT on the PayPlan (i.e., the question "Is PayPlan=No?" is "Yes") on a day with DaylightHours=-1, coolinghours=-1, heatinghours=1, HoursAbove65=-1, HoursBelow65=1, low=-1, high=-1, median=-.75, mean=-.5, q1=-.5, and q3=-.5.
+
+**Response:** the predicted value of Usage be for someone who IS NOT on the PayPlan would be -0.153.
+
+
+
+
+
+
+6.  Estimate the generalization error of a random forest.  Use `forestGrid <- expand.grid(mtry=c(1,2,4,12))`.  Show the `$results` component of the object created by `train`.  If you wish to use parallelization here it will speed up the fitting, but it is not required.  It will take a few minutes for this to run.  Is this model better than the linear regression model?  Explain.
+
+
+```{r Task1.6}
+forestGrid <- expand.grid(mtry=c(1,2,4,12))
+set.seed(474); FORESTfit <- train(Usage~.,data=ELECTRICITY,method="rf",trControl=fitControl,tuneGrid=forestGrid)
+FORESTfit$results[rownames( FORESTfit$bestTune ),]
+```
+
+**Response:**  No, RMSE of this model is 0.94732 which is larger than RMSE of the vanilla linear regression model.
+
+
+
+7.  Let's explore a boosted tree model.  
+
+a.  Use the `gbmGrid` constructed below (normally a lot more tuning is performed, but in the interest of time, we'll only look at these parameters), save the output of `train` to `GBM`, and show the results of `GBM$results[rownames(GBM$bestTune),]`.   If you wish to use parallelization here it will speed up the fitting, but it is not required.  Is this model better than the linear regression model?  Explain.
+
+```{r Task1.7}
+gbmGrid <- expand.grid(n.trees=c(200,500),
+                       interaction.depth=1:3,
+                       shrinkage=c(.05,.1),
+                       n.minobsinnode=c(2,5,10))
+set.seed(474); GBM <- train(Usage~.,data=ELECTRICITY,method="gbm",trControl=fitControl,tuneGrid=gbmGrid,verbose=FALSE)
+GBM$results[rownames(GBM$bestTune),]
+```
+
+**Response:** Yes, RMSE of this model is 0.93829 which is larger than RMSE of the vanilla linear regression model.
+
+
+b.  Load up `library(gbm)` and manually fit a boosted tree with `gbm` with `shrinkage=0.1,interaction.depth=1,n.minobsinnode=2,n.trees=200`.  Plot the relationship between Usage and the "mean" variable to see how the boosted tree has captured the nonlinearity automatically.
+
+```{r Task 1.7b}
+library(gbm)
+MYGBM <- gbm(Usage~.,data=ELECTRICITY,shrinkage=0.1,interaction.depth=1,n.minobsinnode=2,n.trees=200)
+plot(MYGBM,"mean")
+```
+
+
+
+
+***************
+***************
+***************
+
+##Task 2:  Classification
+
+The `telcochurn.csv` datafile contains a small part of a customer database from a telecommunications company (this is different than the `CHURN` dataframe in `regclass` that you used in the activity).  Read in the data and look at a plot of how the probability of churning appears to vary with `tenure` (how many months the customer has subscribed to a plan at the company) and with `PaymentMethod`.  The `plot` code is provided and assumes you have left-arrowed the contents of the datafile into a dataframe called `TELCO`. 
+
+
+```{r Task2,eval=1}
+TELCO <- read.csv("telcochurn.csv")
+plot(Churn~tenure,data=TELCO)
+plot(Churn~PaymentMethod,data=TELCO)
+```
+Let's revisit the `telcochurn.csv` data, where we try to predict `Churn` (Yes/No), i.e., whether a customer fails to renew their contract with a telecommunications company.
+
+We will use the data as-is (no scaling/transforming), and will once again use the entirety of the data when estimating the generalization errors of different models.  We lose the ability to have an independent assessment of the generalization error of the model on a holdout sample.
+
+a.  Based on the distribution of classes in `Churn`, what will the naive model classify everyone in the holdout sample (class Yes or class No)?  
+
+```{r Task2.a}
+table(TELCO$Churn)
+5163/(5163+1869)
+```
+
+**Predicted class for everyone:** No
+**Estimated accuracy:**  0.73422
+
+
+b.  Set up `fitControl` to perform vanilla 5-fold cross-validation (i.e., no repeats) and to focus on the AUC rather than the accuracy.  Using `train` (with `set.seed(474)` on the same line as `train` immediately before the command), fit a logistic regression model (all predictors, no interactions) and report the estimated AUC for generalization and the SD of that estimate.  Note:  you will get warnings (not errors) about `prediction from a rank-deficient fit may be misleading`.  This is fine; it just means that two (or more) predictor variables are essentially redundant. 
+
+
+```{r Task2.b,warning=FALSE}
+fitControl <- trainControl(method="cv",number=5,classProbs=TRUE,summaryFunction = twoClassSummary) 
+set.seed(474); MODEL0<-train(Churn~.,data=TELCO,method="glm",metric="ROC",trControl=fitControl)
+MODEL0$results
+```
+
+**Estimated AUC and SD:**  The AUC is 0.84507 and SD is 0.018345.
+
+
+
+c.  Set up `rpartGrid` to be the result of running `expand.grid` to set up a sequence of `cp` parameters that equal 10 raised to the -5, -4.8, -4.6, ..., -1.2, -1 powers.   Left-arrow the result of running `train` (with `set.seed(474)` on the same line as `train` immediately before the command) to `RPARTfit`.  Report the value of `cp` that gives the lowest estiamted generalization error (`RPARTfit$bestTune`).  Also include the plot `plot(RPARTfit)`, which shows how the estimated ROC varies with `cp` (assuming that the result of running `train`).
+
+```{r Task2.c}
+rpartGrid <- expand.grid(cp=10^seq(from=-5,to=-3,by=0.02))
+set.seed(474); RPARTfit <- train(Churn~.,data=TELCO,method="rpart",trControl=fitControl,metric="ROC",tuneGrid=rpartGrid)
+RPARTfit$bestTune
+plot(RPARTfit)
+```
+
+**Optimal value of cp:**  0.00033113
+
+**Estimated AUC and SD:**  AUC 0.84507 and ROCSD 0.018345.
+
+
+d.  Using `rpart`, manually fit the partition model using a `cp` of 0.006 and run `visualize_model` to see the tree.  Describe what types of customers have the highest chance of churning (about 70%).  I'm looking for something like "Customers with values of tenure between 3 and 7 on a one year contract and paperless billing".  Hint:  it's useful to make a table of the variables involved in the decisions to end up in that partition, e.g., `table(TELCO$Contract)`.
+
+
+```{r Task2.4}
+TREE <- rpart(Churn~.,data=TELCO,cp=0.006)
+visualize_model(TREE)
+```
+
+**Response:**  Customers with values of tenure smaller than 18 on month-to-month contract and no InternetService = DSL,No;
+
+
+
+
+
+e.  Set up `forestGrid` to have the values of `mtry` equal to 1, equal to the "default" value (1/3 of the number of predictors, rounded down), and the value that gives "pure bagging".   Use `train` (with `set.seed(474)` on the same line as `train` immediately before the command) to estimate the generalization errors, left-arrowing the results to `FORESTfit`.  Report the value of `mtry` that gives the highest estimated AUC (and that value of the AUC).  This one takes a while to fit.
+
+```{r Task2.e}
+forestGrid <- expand.grid(mtry=c(1,6,19))  
+set.seed(474); FORESTfit <- train(Churn~.,data=TELCO,method="rf",trControl=fitControl,tuneGrid=forestGrid)
+FORESTfit$results
+```
+
+**Selected mtry:**  6
+**Estimated AUC and its SD:** AUC 0.83203 and SD 0.017576;
+
+
+f.  Set up `gbmGrid` so that the following parameter combinations are considered (use `expand.grid`):
+
+* `n.trees` of 1000, 2000
+* `shrinkage` of 0.005, 0.01
+* `interaction.depth` of 1, 2, 3
+* `n.minobsinnode` of 5, 10
+
+Estimate the generalization errors of these models using `train` (with `set.seed(474)` on the same line as `train` immediately before the command).  Left-arrow the output of `train` to `GBMfit` and copy/paste *into the R chunk* (hashtag each of these lines of code) the output of running:
+
+`head( GBMfit$results[order(GBMfit$results$ROC,decreasing=TRUE),c(1:5,8)], 5 )` 
+
+This gives the "top 10" models based on AUC.
+
+Note:  the `train` command will take a very long time (my mid 2015 Macbook Pro took almost 10 minutes).  That is why I set up the chunk to have `eval=FALSE`, so that the code will be included in your writeup, but not officially evaluated (otherwise knitting would take just as long to complete).  This is why you need to copy/paste the output into the chunk.  Report the highest estimated AUC and its standard deviation.
+
+```{r Task2.f,eval=FALSE}
+gbmGrid <- expand.grid(n.trees=c(1000,2000),interaction.depth=1:3,shrinkage=c(.005,.01),n.minobsinnode=c(5,10))
+set.seed(474); system.time( GBMfit <- train(Churn~.,data=TELCO,method="gbm",trControl=fitControl,metric="ROC",tuneGrid=gbmGrid,verbose=FALSE) )
+head( GBMfit$results[order(GBMfit$results$ROC,decreasing=TRUE),c(1:5,8)], 5 )
+
+#Copy/paste the results of running head below this line!
+ shrinkage interaction.depth n.minobsinnode n.trees     ROC    ROCSD
+12     0.005                 3             10    2000 0.84926 0.019559
+21     0.010                 3              5    1000 0.84919 0.019304
+20     0.010                 2             10    2000 0.84898 0.019588
+23     0.010                 3             10    1000 0.84893 0.019760
+16     0.010                 1             10    2000 0.84893 0.018197
+```
+
+** Response: **  The highest AUC is 0.84926 and its standard deviation is 0.019559.
+
+g.  Fit the model using `gbm` with the suggest set of parameters and leftarrow it into an object called `GBM`.  Run `summary` on `GBM`, then provide plots of how the model is treating the relationship between the probability of churning and the first and second most important predictors.   Remember to use `gbm` you have to create a copy of the training data just for the procedure and convert the column we are predicting to numbers.  See notes and activity.
+
+```{r Task2.g}
+TELCO.GBM <- TELCO  #Make a copy just for gbm
+TELCO.GBM$Churn <- as.numeric(TELCO.GBM$Churn) - 1 #yes = 1, no = 0
+GBM <- gbm(Churn~.,data=TELCO.GBM,distribution="bernoulli",n.trees=2000,interaction.depth=3,shrinkage=0.005,n.minobsinnode = 10)
+summary(GBM) 
+plot(GBM,"Contract",type="response")  
+plot(GBM,"tenure",type="response")  
+```
+
+h.  The models were "tuned" to maximize the AUC instead of the accuracy in this case, and for good reason.  Why does maximizing the AUC rather than the accuracy make sense here?  
+
+** Response: **  Because in the future, we more care about the AUC which is the fraction of pairs of individuals from opposite classes in the data whose
+probabilities are ordered correctly.
+
+
+
+
+i.  Is one model a compelling choice versus the others?  Why or why not?
+
+**Response:** Based on the 1 SD rule, all AUC are within one standard deviation to the highest one. So there is not compelling reason to choose the one. 
+
+
+
+
+
+****************
+****************
+****************
+
+## Task 3 (programming) 
+
+a.  Write a function called `SSE_reduction` that takes two arguments:  
+
+* `PARTITION` - a dataframe whose first column is the y variable and whose second column is the x variable
+* `threshold` - the threshold for a rule x <= threshold vs. x > threshold
+
+The function should return *the reduction in SSE* when the individuals in the partition are split with the rule that uses the provided threshold.
+
+Hints.  In your function
+
+* Left-arrow `y` to be the first column of `PARTITION` and left-arrow `x` to be the second column of `PARTITION`
+
+* Create a vector called `left` which contains the y values of those individuals whose x values are <= `threshold`
+
+* Create a vector called `right` which contains the y values of those individuals whose x values are > `threshold`
+
+* Remember that if `values` is a vector of the y-values of individuals in a partition, then the SSE of that partition is the sume of squared differences between the average and the individuals values, i.e., `sum( (values - mean(values))^2 )`
+
+* Verify your function works on the dataframe `DATA` and thresholds given below
+
+```{r task3}
+SSE_reduction <- function(PARTITION,threshold) { 
+   y<-PARTITION[,1]
+   x<-PARTITION[,2]
+   left<-y[which(x<=threshold)]
+   right<-y[which(x>threshold)]
+   result<-(sum((y - mean(y))^2 )-(sum((left - mean(left))^2)+sum((right - mean(right))^2 )))
+   return(result)
+}
+
+DATA <- data.frame( yvar = c(0,5,5,4,8), xvar = c(1.2,1.8,3.1,4.2,5.8) )
+SSE_reduction(DATA,2.45)
+#12.03333
+SSE_reduction(DATA,6)
+#0
+SSE_reduction(DATA,4.1)
+#8.533333
+```
+
+
+b.  Load in the `CENSUS` data from `regclass`.  We want to come up with the best rule based on `HomeownerHH` to split the individuals in the data into two partitions.  Naturally, we'll choose the rule `Homeowner <= threshold` vs. `Homeowner > threshold` that gives the largest reduction in the SSE.  
+
+* Define a vector `unique.x` to be the unique values of `HomeownerHH` in the `CENSUS` data, sorted from smallest to largest.
+
+* Initialize vectors `thresholds` and `reductions` to be empty
+
+* Write a `for` loop that loops through values of `i` from 1 to `length(unique.x)-1` that stores into the i-th element of `thresholds` the threshold under consideration (the midpoint between `unique.x[i]` and `unique.x[i+1]`, i.e., the average of those two values) and that stores into the i-th element of `reductions` the reduction in SSE when using that threshold.
+
+* Make a scatterplot of `reductions` (vertical axis) vs. `thresholds` (horizontal axis)
+
+* Report the optimal threshold and the SSE reduction when using that threshold.
+
+Note:  Use your `SSE_reduction` function!  You can get the reduction with `SSE_reduction(CENSUS[,c("ResponseRate","HomeownerHH")],thres)`, where `thres` is the current value of the threshold under consideration.
+
+```{r task3b}
+data(CENSUS)
+unique.x <- c(sort(unique(CENSUS$HomeownerHH)), descending=FALSE)
+thresholds <- c()
+reductions <- c()
+for (i in 1:length(unique.x)-1) {
+  thresholds[i] <- ((unique.x[i] + unique.x[i+1])/2)
+  reductions[i] <- SSE_reduction(CENSUS[,c("ResponseRate","HomeownerHH")],thresholds)
+}
+plot(thresholds,reductions)
+```
+
+
+****************
+****************
+****************
+
+##Task 4 (optional; not to turn in)  
+
+The XGBoost model is very often the best predictive classification model, but it often takes a lot of work to tune correctly.  Let's make a `TRAIN` and `HOLDOUT` sample  from `TELCO`.
+
+```{r q2 xgboost setup,eval=FALSE}
+TELCO <- read.csv("telcochurn.csv")
+set.seed(474); train.rows <- sample(1:nrow(TELCO),0.6*nrow(TELCO))
+TRAIN <- TELCO[train.rows,]; HOLDOUT <- TELCO[-train.rows,]
+fitControl <- trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = twoClassSummary, verboseIter = FALSE)
+```
+
+First, lets fix `eta` to be 0.01, `max_depth=5`, `min_child_weight=1`, `gamma=0`, `colsample_bytree=0.8`, `subsample=0.8` and determine the optimal number of trees.  Try `nrounds=c(100,200,500,1000,1500)`.  Remember to do `set.seed(474)` on the same line as `train` (immediately before it).  Note:  you will get the warning message `The training data could not be converted to a data frame for saving`.  This is a warning not an error, and you didn't want to save it anyway (you already have a copy of it).
+
+```{r q2 xgboost tuning1,eval=FALSE}
+xgboostGrid <- expand.grid(eta=0.01,nrounds=c(100,200,500,1000,1500),
+                           max_depth=5,min_child_weight=1,gamma=0,colsample_bytree=0.8,subsample=0.8)
+#Make a copy for XGB and convert y variable into 0s and 1s (required)
+TRAINXGB <- TRAIN  
+TRAINXGB$Churn <- as.numeric(TRAINXGB$Churn)-1  
+#Convert data into sparse model matrix;  the -1 is important for bookkeeping
+TRAINXGB <- sparse.model.matrix(Churn~.-1,data=TRAINXGB)  
+#Expect the training to take a LONG time, potentially hours
+set.seed(474); XTREME <- train(x=TRAINXGB,y=TRAIN$Churn,method="xgbTree",trControl=fitControl,metric="ROC",tuneGrid=xgboostGrid,verbose=FALSE)
+XTREME$results[,c(1:8,11)]
+```
+
+Second, notice how the estimated ROCs are all within 1 SD of each other.  This implies any of these choices for the number of trees is ok, but we'll go ahead and choose 200 (since that had the largest value for ROC).  Let's fix `eta` at 0.01, `nrounds` at 200,  `min_child_weight` at 1, and try `max_depth` of 3, 5, or 7 as well as `gamma` of 0, 5, 10, and `subsample` at 0.8 and 1 and `colsample_bytree` of  0.8 and 1 .  This takes a while.  The result is somewhat underwhelming because all models are still within 1 SD of each other.
+
+```{r xgboost tuning 2,eval=FALSE}
+xgboostGrid2 <- expand.grid(eta=0.01,nrounds=200,max_depth=c(3,5,7),min_child_weight=1,gamma=c(0,5,10),colsample_bytree=c(.8,1),subsample=c(0.8,1))
+set.seed(474); XTREME2 <- train(x=TRAINXGB,y=TRAIN$Churn,method="xgbTree",trControl=fitControl,metric="ROC",tuneGrid=xgboostGrid2,verbose=FALSE)
+head(XTREME2$results[order(XTREME2$results$ROC,decreasing=TRUE),c(1:8,11)],8)
+```
+
+Next we *should* iterate, i.e., fix the max depth, gamma, colsample bytree, and subsample parameters at the ones that had the highest estimated AUC, drop eta down to a smaller value like 0.0001 and retune the number of trees (e.g.,  1000, 5000, 10000, 50000).  Then, fix eta at 0.0001 and nrounds at the appropriate number of trees and re-tune the other four parameters.  However, this process is extremely time consuming.  **Fit the following model and make predictions on the holdout sample; report the actual AUC and Accuracy on the holdout**
+
+```{r xgboost tuning 3,eval=FALSE}
+xgboostGrid3 <- expand.grid(eta=0.0001,nrounds=50000,max_depth=5,min_child_weight=1,gamma=5,colsample_bytree=1,subsample=.8)
+fitControl3 <- trainControl(method = "none")
+set.seed(474); XTREME3 <- train(x=TRAINXGB,y=TRAIN$Churn,method="xgbTree",trControl=fitControl3,tuneGrid=xgboostGrid3)
+
+HOLDOUTXGB <- HOLDOUT  
+HOLDOUTXGB$Churn <- as.numeric(HOLDOUTXGB$Churn)-1  #Convert response into 0s and 1s
+HOLDOUTXGB <- sparse.model.matrix(Churn~.-1,data=HOLDOUTXGB)  #Sparse model matrix format
+classifications <- predict(XTREME3,newdata=HOLDOUTXGB) #get predicted classes
+confusionMatrix(HOLDOUT$Churn,classifications) #confusion matrix
+probabilities <- predict(XTREME3,newdata=HOLDOUTXGB,type="prob") #get predicted probabilities
+roc(HOLDOUT$Churn,probabilities[,2])  #the [,2] is because class of interest is 2nd column
+```
+
+** Actual AUC on holdout ** 0.84
+** Actual accuracy on holdout **  0.795   
+
+
+**************
+

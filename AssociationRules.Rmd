@@ -1,0 +1,416 @@
+---
+title: "Association Rules"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,collapse=TRUE)
+options(width=120)
+options(digits=3)  
+
+library(arules)
+library(arulesViz)
+library(regclass)
+```
+
+The file `musiclikesmod.csv` contains information on users of last.fm (https://www.last.fm/), an online service that lets you stream music.  It also makes recommendations on what songs you might like based on your listening history (and that of your friends, if you share data).  We can perform a "market basket analysis" to determine what combinations of artists often are listened among the same user if we are clever.
+
+In this case, each listener will represent a "cart".  Each listener has a list of bands they like, and these bands can be thought of as "items in the cart".  Perhaps association rules like "If a listener likes Lady Gaga and Kelly Clarkson, then chances are they will also like Katy Perry".
+
+In the data (which comes from 2011, so think of the music scene back then), there are 1821 "carts" (listeners) each of which contains one or more of 2459 unique items (bands).  Let's see what we can learn about listening habits!
+
+
+```{r read in data and setup and this takes a while to knit}
+#Read in data, making sure text is read in as text instead of categorical variables
+MUSIC <- read.transactions("musiclikesmod.csv",sep=",",format="basket")
+#Look at the top 20 frequently appearing product_ids
+itemFrequencyPlot(MUSIC,topN=20,type="absolute",horiz=TRUE,cex.names=0.6)
+```
+
+**************
+
+##Question 1:
+
+There are 2459 unique bands, though many are very rare.  
+
+a.  Back in 2011, two of my favorite bands were `PinkFloyd` (70s rock band) and `DreamTheater`.  
+
+```{r Question1a}
+itemFrequency(MUSIC)["PinkFloyd"]
+itemFrequency(MUSIC)["DreamTheater"]*length(MUSIC)
+```
+
+b.  If we restrict ourselves to bands that at least 100 listeners liked (i.e., who have a support at least 100/1821), how many bands would end up being considered for inclusion into the ruleset (it's a little over one hundred).  If we considered only rules of length 3 (If A and B, then C), how many possible rules would we need to be evaluated?
+
+```{r Question1b}
+length(itemFrequency(MUSIC)[which((itemFrequency(MUSIC)*length(MUSIC))>=100)])
+RULES <- apriori(MUSIC,parameter = list(minlen=3, maxlen=3),control=list(verbose=FALSE))
+length(RULES)
+```
+
+c.  Build a ruleset using this support (100/1821) and a minimum level of confidence of 65%.  Do not put any restrictions on the lengths of the rules.  Remove the redundant ones, and print out the top 10 rules in terms of lift to the screen.  If you know pop music from 2011, you'll see that they make a lot of sense. 
+
+```{r Question1c}
+RULES1 <- apriori(MUSIC,parameter = list(supp=100/1821,conf=0.65),control=list(verbose=FALSE))
+RULES1<- RULES1[!is.redundant(RULES1)]
+inspect( sort(RULES1,by="lift",decreasing=TRUE)[1:10] )
+```
+
+d.  You should find that one of the top rules in terms of lift is `{BritneySpears,SelenaGomeztheScene} => {MileyCyrus}`.  If you have the most recent version of `arules`, you'll see that exactly 100 listeners like this set of 3 artists.  First, explain how can you get the number 100 from the support of the rule?   Second, write a line of R code that counts up the number of "transactions" that contain all 3 of these "items" (you'll need `length` and `which` along with `%in%` or `%ain$`).
+
+```{r Question1d}
+0.0549*1821
+length( MUSIC[which(MUSIC %ain% c("BritneySpears","SelenaGomeztheScene","MileyCyrus"))] )
+```
+```
+
+e.  The rule `{BritneySpears,SelenaGomeztheScene} => {MileyCyrus}` has a confidence of 87.7%.  Carefully interpret this number.
+
+**Response:** If a listener likes BritneySpears and SelenaGomeztheScene, there is about a 87.7% chance they also like MileyCyrus.
+
+
+
+
+f.  The lift of the rule `{BritneySpears,SelenaGomeztheScene} => {MileyCyrus}` is about 6.  Interpret this value in two ways:
+
+1)  by commenting on how often these bands appear together in users' lists of likes compared to lists generated when users pick bands at random 
+
+**Response:**  The lift is 6, so BritneySpears and SelenaGomeztheScene are appearing in the cart together 6 times more frequently than what we would expect by chance.
+
+
+2) by calculating and commenting on probabilities of finding `MileyCyrus` before and after knowing that both `BritneySpears` and `SelenaGomeztheScene` is in the list of likes (this interpretation requires using the value of the lift and the support of `MileyCyrus`).
+
+**Response:**  Overall, the probability of finding `MileyCyrus` before knowing that both `BritneySpears` and `SelenaGomeztheScene' is about 14.4%.  However, given that knowing that both `BritneySpears` and `SelenaGomeztheScene`, the probability increases by a factor of 6 to 86.7%. The support is 5.49%, which is the number of total tarnsactions that include all thrre of the artists in the antecedent and consequent parts of the rule.
+
+
+```{r Question1f}
+#Place for code if you need it
+itemFrequency(MUSIC)["MileyCyrus"]
+6.07*itemFrequency(MUSIC)["MileyCyrus"]
+```
+
+
+
+g.  If you run `table( inspect( rhs(RULES) ) )` (don't run it, it'll generate tremendous irrelevant output), you'd find that not that many bands are the consequent of the rules that were discovered.  Thus, there's not much room here for developing a "recommendation engine" (i.e., recommending bands based on the list of user's likes)
+
+```{r consequent,eval=FALSE}
+    {ArcticMonkeys}      {AvrilLavigne}            {Beyonc}     {BlackEyedPeas}     {BritneySpears} {ChristinaAguilera} 
+                  1                 449                 994                 246                1068                1284 
+        {KatyPerry}              {Keha}     {KellyClarkson}      {KylieMinogue}          {LadyGaga}           {Madonna} 
+                871                 634                   1                 163                 616                 330 
+      {MariahCarey}        {MileyCyrus}               {Pnk}           {Rihanna}           {Shakira}  {ThePussycatDolls} 
+                 21                 226                 211                1024                 431                  27 
+```
+
+Using a single line of code, print to the screen the 2 rules that involve `ArcticMonkeys` or `KellyClarkson` in the consequent.
+
+```{r Q1g}
+inspect(subset(RULES1,rhs %in% c("ArcticMonkeys","KellyClarkson") ) )
+```
+
+h.  Remake the rules (call them `RULES.MINE`) so that the minimum support is 30/1821 (they have to apply to at least 30 listeners) and a minimum level of confidence of 0.25. Don't remove redundant rules in this case.  Think of an artist (or artists) that you particularly liked back in 2011 (don't use one already studied) and see if any rules involved them on the left hand or right hand sides (do mind the spelling; special characters and spaces have been eliminated).  Print to the screen 5 of the rules, if any exist.
+
+```{r Q1h}
+RULES.MINE <- apriori(MUSIC,parameter = list(supp=30/1821,conf=0.25),control=list(verbose=FALSE))
+inspect(subset(RULES.MINE,rhs %in% c("GreenDay","GirlsAloud")|lhs %in% c("GreenDay","GirlsAloud"))[1:5])
+```
+
+i.  Create `MUSIC2` and `RULES2` as follows, which contain association rules among more "obscure" bands (all users who listened to any of the top 20 most frequently listened to bands were eliminated).  Plot these rules (make sure to run `set.seed(474)` on the same line immediately before `plot`) using the same plotting syntax you have seen in the activity.  
+
+Turns out these are associations between rock and metal bands!  What's interesting though is that the likes tend to come in clusters.  If you don't know much about this type of music, you might think that "all types of metal are the same".  Is it though?  The graph makes this clear, and this might not have been apparent from scanning the list of rules.
+
+* Do listeners of Metallica tend to listen to Iron Maiden (and vice versa)?  Yes or No, and how do you know?  
+
+**Response:** Yes, there is an arrow pointing from Iron Maiden to a large cricle to Metallica and vice versa.
+
+
+* Do listeners of Megadeth tend to listen to Black Sabbath or ACDC (and vice versa)?  Yes or No, and how do you know? 
+
+**Response:**  No, based the plot, listeners of ACDC tend to listen to Black Sabbath or ACDC and vice versa, but there is not connection to Megadeth or vice versa.
+
+
+```{r Question1i}
+#MUSIC2 becomes the lists that do NOT contain any of the top 20 most frequently appearing bands 
+MUSIC2 <- MUSIC[setdiff(1:length(MUSIC),which(MUSIC %in% names( sort( itemFrequency(MUSIC),decreasing = TRUE )[1:20]))) ]
+length(MUSIC2)
+RULES2 <- apriori(MUSIC2, parameter = list(supp = 15/235, conf = 0.5, maxlen=3),control=list(verbose=FALSE))
+RULES2 <- RULES2[!is.redundant(RULES2)]
+length(RULES2)
+set.seed(474);plot(RULES2, method="graph", control=list(type="items"),vertex.size=5,vertex.label.cex=0.6,interactive=FALSE)
+```
+
+
+**************
+
+##Question 2
+
+Remake the rules from `MUSIC`, but use the default parameters for everything (i.e., remove the argument `parameter = list(supp = 100/1821, conf = 0.65)`)  Remove the redundant ones.
+
+a.  How many rules were found?
+
+b.  How many rules have levels of confidence between 0.83 and 0.85 (inclusive)
+
+c.  What rule has the highest level of confidence?  It's not QUITE 100%, but it's close.  How many user DOESN'T the rule apply to (note:  it DOES apply to 200).  Hint:  you could use the `count` and `confidence` of the rule to get this.
+
+d.  One artist that my sister and I grew up with was `Madonna`.  What rules have `Madonna` in the antecendent in additional to having lifts greater than 4 and confidences greater than 90%?  Print the four to the screen.  The consequent of these rules are all the same, and is an artist that I think is pretty ok.
+
+
+```{r Question2}
+RULE.MUSIC<-apriori(MUSIC,control=list(verbose=FALSE))
+RULE.MUSIC<- RULE.MUSIC[!is.redundant(RULE.MUSIC)]
+length(RULE.MUSIC)
+length(RULE.MUSIC[quality(RULE.MUSIC)$confidence >=.83 & quality(RULE.MUSIC)$confidence <= .85])
+inspect(sort(RULE.MUSIC,by="confidence",decreasing = TRUE)[1]);round(200-(200*0.09950249),1)
+inspect(subset(RULE.MUSIC, subset=lhs %in% c("Madonna") & quality(RULE.MUSIC)$confidence >0.9 & quality(RULE.MUSIC)$lift >4))
+```
+
+
+
+
+
+##Question 3:  
+
+Imagine that during the course of a market basket analysis that you find one item (for illustration, say it's granola bars) is the consequent of dozens of rules, but it never appears as an antecedent.  What we might we do with this information?  One thing is we could place granola bars strategically around the store near items involved in the rules in the hopes people will buy them together (I know my Food City has bananas in "random" places it seems, and maybe this explains why).   
+
+If we want to use the association rules we have discovered to help drive sales, which course of action makes more sense and why:  discounting granola bars with the hopes of increasing the sales of the dozens of products involved in these rules,  or having a promotion where if you buy any of products that appear in the rules you get a 25 cents off coupon for granola bars?
+
+**Response:** I would choose to Have a promotion where if you buy any of products that appear in the rules you get a 25 cents off coupon for granola bars makes more sense. People who tend to  get other items always like granola bars, but people who like granola bars usually do not tend to get other items, because granola bars is highly demanded and everyone like it. Therefore, it never appears as an antecedent, and the promotion action will help with increasing other products' sales with the increased sales of granola. 
+
+
+
+
+**************
+
+##Question 4:  
+
+Association rule mining can be useful in predictive analytics as well.  The `DONOR` dataset in `regclass` contains information (after the following data processing) on around 7200 donors to a veterans charity.  The column of interest is `Donate` (1st column), which has levels "Yes" and "No".  It's difficult to predict who will donate!  Instead of building a predictive model, let's understand what types of individuals tend to donate (about 26.5% of the people in this dataset do).
+
+Define `combine_levels` by running the following code (click the tiny arrow next to `combine_levels` to collapse it into a single line so it doesn't clog up this document).  Run the following data processing steps, which takes out unnecessary columns, discretizes all numeric predictors with the `mdlp` method, and removes all irrelevant columns (same value for each entry).  
+
+Convert `DONOR.DISC` into a transactional object, then find all association rules whose consequent is `Donate=Yes` and whose support is at least 0.01, confidence is at least 0.4, and whose length is at most 3.  
+
+Print out the discovered rule that has the highest level of confidence, then summarize to the best of your ability what the rule says and its implications.  Note:  you might want to look at the `$Details` element of the list object created by `combine_levels` for this variable's discretization to give as much detail as possible.
+
+```{r combinelevels,include=FALSE}
+combine_levels <- function(DATA,method="none",threshold=0,target=6,train.rows=NA,newname="Combined",seed=NA) {
+  if( mean(complete.cases(DATA)) < 1 ) { stop("Object cannot contain any missing values")}
+  require(discretization)
+  require(regclass)
+  
+  #First combine rare levels if requested by having threshold > 0
+  if(threshold == 0 | is.na(threshold)) { invisible("Not doing anything") } else { 
+    x <- c()
+    if(class(DATA) %in% c("character","factor") ) {  x <- factor(DATA) }
+    if(class(DATA) %in% c("matrix","data.frame") ) {
+      if( class(DATA[,1]) %in% c("character","factor")) { x <- factor(DATA[,1]) } }
+    if(class(x) == "factor") {
+      rare.levels <- names( which( sort( table(x) ) <= threshold ) )
+      if(length(rare.levels)>0) { 
+        levels(x)[ which(levels(x) %in% rare.levels) ] <- newname
+        ST <- sort(table(x))
+        if(ST[newname]<=threshold) {  #If combined is still rare, combine that with next most rare level
+          levels.to.combine <- which( levels(x) %in% c(newname,names(ST)[2]))
+          levels(x)[levels.to.combine] <- newname
+          rare.levels <- c(rare.levels,names(ST)[2]) }
+      }
+      if(class(DATA) %in% c("character","factor") ) {  DATA <- x }
+      if(class(DATA) %in% c("matrix","data.frame") ) { DATA[,1] <- x } }
+    if( class(x) == "NULL" ) { stop("Cannot combine rare levels of x unless is a categorical variables")}
+  }
+  
+  #If combination of rare levels only (no discretization), we're done
+  if(method=="none") { return(list(Details=NULL,newlevels= x ) ) }
+  
+  #Handle case where unsupervised discretization is taking place (DATA MUST BE a numerical vector)
+  if( method %in% c("interval","frequency","cluster") ) {
+    if( class(DATA) %in% c("numeric","integer") ) { 
+      old.values <- DATA
+      n.levels <- target  #change to what you want
+      if( !is.na(seed) ) { set.seed(seed) }  #Set random number seed if seed was passed as argument
+      x.cluster <- discretize(DATA,method=method,categories=n.levels,onlycuts = TRUE)
+      
+      DATA <- factor(
+        paste("level",pmin(pmax(sapply(DATA,function(x)sum(x>=x.cluster)),1),length(x.cluster)-1),sep=""),
+        ordered=TRUE,levels=paste("level",1:(length(x.cluster)-1),sep="") )
+      A <- aggregate(old.values~DATA,FUN=mean)
+      names(A) <- c("NewValue","yAverage")
+      return(list(Details=A,newlevels= DATA ) )
+    } }
+  
+  
+  #Now do supervised discretization cases; now need to worry whether to do it to whole data or just training
+  #HALFDISC is be name of dataframe where discretization is derived from here on out
+  
+  if(class(DATA)=="matrix") { DATA <- as.data.frame(DATA) }
+  if( !(class(DATA)=="data.frame") ) { stop("Supervised discretization requires dataframe with 1st column x 2nd column y")}
+  if( ncol(DATA) != 2 ) { stop("Supervised discretization requires dataframe with 1st column x 2nd column y") }
+  
+  
+  names(DATA) <- c("x","y")
+  DATA$rownumbers <- 1:nrow(DATA)
+  #If a vector of training rows is given, make sure to respect that; discretization scheme should be developed on training
+  if( length(train.rows)>1 ) { HALFDISC <- DATA[train.rows,] } else { HALFDISC <- DATA }
+  
+  HALFDISC$y <- factor(HALFDISC$y)
+  #Make sure function can proceed:  discretizing when y is a 2-level categorical variable
+  if(nlevels(HALFDISC$y)!=2) { stop("Supervised discretization must have y be categorical with 2 levels") }
+  
+  #Handle the case where x is a categorical variable.  My own heuristic.  Let each level be represented by
+  #the fraction of individuals of that level with y's 1st level alphabetically
+  if( class(HALFDISC$x) %in% c("character","factor") ) {
+    #Treat levels as numerical by calculating the proportion of individuals with 1st level alphabetically
+    A <- aggregate(y~x,data=HALFDISC,FUN=function(x)mean(x==levels(x)[1])) 
+    A <- A[order(A[,2]),]
+    names(A) <- c("level","value")
+    HALFDISC <- merge(HALFDISC,A,by.x="x",by.y="level")
+    HALFDISC <- HALFDISC[order(HALFDISC$rownumbers),]
+    HALFDISC$rownumbers <- NULL; rownames(HALFDISC) <- NULL
+    if( method %in% c("interval","frequency","cluster") ) {
+      n.levels <- target  #change to what you want
+      if( !is.na(seed) ) { set.seed(seed) }  #Set random number seed if seed was passed as argument
+      thresholds <- discretize(HALFDISC$value,method=method,categories=n.levels,onlycuts = TRUE)
+    } 
+    if (method == "mdlp" ) {
+      disc.scheme <- mdlp(HALFDISC[,c("value","y")])
+      cutoffs <- sort( unlist( disc.scheme$cutp ) )
+      if(cutoffs[1] != "All" ) { thresholds <- c(min(HALFDISC$value), cutoffs, max(HALFDISC$value))  } else { 
+        thresholds <- c(min(HALFDISC$value)-1,max(HALFDISC$value)+1)
+      }
+    }
+    HALFDISC$newlevels <- factor( paste("level",pmin(pmax(sapply(HALFDISC$value,function(x)sum(x>=thresholds)),1),length(thresholds)-1),sep=""),
+                                  ordered=TRUE,levels=paste("level",1:(length(thresholds)-1),sep=""))
+    #HALFDISC has original x/y values, the numerical equivalent of that level, and new level identity
+    #Make M be a lookup table
+    M <- HALFDISC[,c("x","newlevels")]
+    M <- M[order(M$newlevels),]
+    M <- M[!duplicated(M),]  
+    M <- merge(M,A,by.x="x",by.y="level")
+    M <- M[order(M$x),]  #M is now a lookup table giving old and new levels and numerical equivalent
+    
+    RESULT <- merge(DATA,M,by="x")  #RESULT is the old values of x/y, newlevels, and numerical equivalent
+    RESULT <- RESULT[order(RESULT$rownumbers),]; rownames(RESULT) <- NULL; 
+    to.return <- list(Details=data.frame(OldValue=M$x,yAverage=M$value,NewValue=M$newlevels),newlevels= RESULT$newlevels ) 
+  }
+  
+  #Handle the case where x is a numerical variable
+  if( class(HALFDISC$x) %in% c("numeric","integer") ) {
+    #Treat levels as numerical by calculating the proportion of individuals with 1st level alphabetically
+    if( method %in% c("interval","frequency","cluster") ) {
+      n.levels <- target  #change to what you want
+      if( !is.na(seed) ) { set.seed(seed) }  #Set random number seed if seed was passed as argument
+      thresholds <- discretize(HALFDISC$x,method=method,categories=n.levels,onlycuts = TRUE)
+    } 
+    if (method == "mdlp" ) {
+      disc.scheme <- mdlp(HALFDISC[,1:2])
+      cutoffs <- sort( unlist( disc.scheme$cutp ) )
+      if(cutoffs[1] != "All" ) { thresholds <- c(min(HALFDISC$x), cutoffs, max(HALFDISC$x) )  } else { 
+        thresholds <- c(min(HALFDISC$x)-1,max(HALFDISC$x)+1)
+      }
+    }
+    HALFDISC$newlevels <- factor( paste("level",pmin(pmax(sapply(HALFDISC$x,function(x)sum(x>=thresholds)),1),length(thresholds)-1),sep=""),
+                                  ordered=TRUE,levels=paste("level",1:(length(thresholds)-1),sep=""))
+    #HALFDISC has original x/y values, the numerical equivalent of that level, and new level identity
+    #Make M be a lookup table
+    M <- HALFDISC[,c("x","newlevels")]
+    
+    M <- M[order(M$x),]
+    M <- M[!duplicated(M),]  #M is now a lookup table giving old and new levels and numerical equivalent
+    A <- aggregate(y~newlevels,data=HALFDISC,FUN=function(x)mean(x==levels(x)[1]))
+    M <- merge(M,A,by="newlevels")
+    Details <- data.frame(OldValue=M$x,yAverage=M$y,NewValue=M$newlevels)
+    A1 <- aggregate(OldValue~NewValue,data=Details,FUN=min)
+    names(A1)[2] <- "Minimum"
+    A2 <- aggregate(OldValue~NewValue,data=Details,FUN=max)
+    names(A2)[2] <- "Maximum"
+    A.final <- merge(A1,A2,by="NewValue")
+    temp <- M[,c("newlevels","y")]
+    temp <- temp[!duplicated(temp),]
+    A.final$yAverage=temp$y
+    
+    RESULT <- merge(DATA,M,by="x",all.x=TRUE)  #RESULT is the old values of x/y, newlevels, and numerical equivalent
+    bad.rows <- which(is.na(RESULT$newlevels))
+    if(length(bad.rows)>0) {
+      bad.x <- RESULT[is.na(RESULT$newlevels),1]
+      bad.levels <- sapply(bad.x,function(x){m1<-which(A.final$Minimum<=x); ifelse(length(m1)<1,1,max(which(x>=A.final$Minimum))) })
+      RESULT$newlevels[bad.rows] <- factor( paste("level",bad.levels,sep=""))    
+      }
+    summary(RESULT)
+    RESULT <- RESULT[order(RESULT$rownumbers),]; rownames(RESULT) <- NULL; 
+    to.return <- list(Details=A.final,newlevels= RESULT$newlevels ) 
+  }
+  return(to.return)
+}
+```
+
+```{r Question4}
+#Given data processing steps
+library(regclass); data(DONOR)
+DONOR$Donation.Amount <- NULL
+DONOR$ID <- NULL
+DONOR <- droplevels(subset(DONOR[complete.cases(DONOR),]))
+mean(DONOR$Donate=="Yes") #0.2647059
+numeric.columns <- which( unlist(lapply(DONOR,class)) %in% c("numeric","integer") )
+DONOR.DISC <- DONOR
+for (i in numeric.columns) {  #loop through each numerical column of WATER
+  DONOR.DISC[,i] <- combine_levels(DONOR[,c(i,1)],method="mdlp")$newlevels
+}
+#Remove all columns that only have a single level
+irrelevent <- which( unlist(lapply(DONOR.DISC,nlevels)) == 1 )
+DONOR.DISC <- DONOR.DISC[,-irrelevent]
+
+#Convert into transactional form
+DONOR.DISC <- as(DONOR.DISC,"transactions")
+
+
+#Code for you to fill out.
+RULES <- apriori(DONOR.DISC,parameter = list(supp=0.01,conf=0.04, maxlen=3),appearance = list(default="lhs",rhs="Donate=Yes"),control=list(verbose=FALSE))
+length(RULES)
+RULES3 <- RULES[!is.redundant(RULES)]
+CONF <- sort(RULES3,by="confidence")
+inspect(sort(RULES3,by="confidence",decreasing=TRUE)[1:1] )
+
+```
+
+**Response:**  Compared to the overall probability that BritneySpears is in the cart, 3.63 times more likely is it that BritneySpears is in the cart once we know ChristinaAguilera and MileyCyrus. (Lift) There is 10.2% of transaction to which the rule applies. (support) There is 98.4% chance of transactions for which the rule is correct.
+
+
+
+
+
+**************
+
+##Question 5:  
+
+Unfortunately, the sizes of the three quality measures for association rules (support, confidence, and lift) don't have any *intrinsic* importance:  bigger isn't always more interesting.  In other words, sometimes a large confidence is interesting, sometimes it's not.  Sometimes a large lift is interesting, sometimes it's not, etc.
+
+a.  It is found that the rule { A, B } -> { C } has a confidence of 1 and a support of 0.12.  At first glance this sounds impressive:  12% of carts have items A, B, and C in them, and *every* time A and B are in a cart, we also find item C.  However, think of a scenario where a rule that has 100% confidence has absolutely no practical consequence.  Hint:  think about the support of C.
+
+**Response:** Despite a 100% confidence of the rule, we may have a very low support of consequent. For example, personal imformation of an online game, there are a billion users for a period of days. User X logged on to the game once a day for each of the days and actually spend at least some time on the game each day. The rule X -> play online game has insignificant support(one in a billion) but has 100% confidence.
+
+
+
+**************
+
+b.  After scanning through all rules of length 2 in a large transactional database, it is found that the rule with the highest lift is { E } -> { F } with a lift of 10.  At first glance this sounds impressive:  given that item E is in the cart, the probability of also finding F is 10 times higher than the probability had the identities of other items been unknown.  However, think of a scenario where this rule has absolutely no practical consequence.  Hint:  try playing around with this `my_lift` function (`n` is the number of carts, `nA` is the number with item A, `nB` is the number with item B, and `nAB` is the number with both).
+
+```{r Q5}
+my_lift <- function(n,nA,nB,nAB) {
+  lift <- function(n,nA,nB,nAB) { (nAB/n)/(nA/n*nB/n)}
+  exact.pval.lift <- function(n,nA,nB,nAB) { 1-phyper(nAB-1,nA,n-nA,nB) }
+  list(lift=lift(n,nA,nB,nAB),pvalue=exact.pval.lift(n,nA,nB,nAB))
+}
+my_lift(50000,500,10,1)
+```
+
+**Response:** From the results above, we can notice that the lift is very high, but the p-value is about 0.096 which is higher than 0.05, so the rule is not statistically significant, and item E and F are bought together by chance.
+
+
+
+**************
+
+c.  Normally, a lift of 1.25 does not get much attention because it is so close to 1.  However, think of a scenario where the rule { A } -> { B } having a lift of 1.25 would imply that item B is in the cart with 100% certainty when item A is in the cart.
+
+**Response:** There is a maximum value of the lift. (1.25=1/support of B item), so if the support of the item A of the rule is 0.8, that means the probability of buy that item A, given the items in the item B is 100%. 
+
+
+

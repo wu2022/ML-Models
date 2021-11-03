@@ -1,0 +1,312 @@
+---
+title: "Assignment 6 - Linear and Logistic Regression"
+author: "xuezhi Wu"
+date: "due Tuesday Feb 27 by 11:59pm"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+#do not change this code
+##IMPORTANT NOTE## The warning=FALSE will become increasingly important from here on out since 
+#we don't need to see the warnings when knitting.  As you have worked through your code you will 
+#have verified its doing what it should be doing
+knitr::opts_chunk$set(echo = TRUE,collapse=TRUE,warning = FALSE)
+library(regclass)
+library(caret)
+library(pROC)
+```
+
+1a.  Give 3 tasks that do not appear in the notes and that we have not discussed in class that can be treated as classification problems.  One of your examples should involve a situation where three or more classes exist. 
+
+**Response:**  Classify outcome of apllying for top 10 universities in US: succeed or fail; Classify the season of the flu spread dramatically: Spring, Summer, Fall, or Winter; Classify students' status in university: on-track or off-track.
+
+
+1b.  For one of the tasks you listed that has two classes, define the "positive" class and the "negative" class in a sensible way (the positive class is the one you're the most interested in detecting).  In English, what would a false positive correspond to?  A false negative?  Which is the more serious type of error based on your problem?
+
+**Response:**  The positive class is students who successfully apply for top 10 US universities. The natative calss is when they are failed to apply for these universities. A false positve is that the model predicts a student succeed, but in reality he or she fails. And a false negative is that the model predicts a student fails, but in reality he or she succeeds. So, a false negative is a more serious error because a student who succeeded is classified as it failed, which will make this students depressed and wasting his or her time on meaningless arguing with administration office in university.
+
+
+1c.  Give 2 tasks that do not appear in the notes and that we have not discussed in class that can be treated as a regression problems.  One of your examples should involve a situation where three or more classes exist. 
+
+**Response:**  House price depends on the location in TN (x):East Tennessee, middle Tennessee, Western Tennessee; Car price depends on one factor (x): new car or used car.
+
+
+1d.  Choose one of your regression tasks and address whether you think (in your head, visualization the distribution of the $y$ variable) and state whether you think your model should be predicting $y$ or some transformation (like $log(y)$) of it.  Briefly justify your answer.
+
+**Response:**  For Tennessee house price, the house price of East Tennessee is lower than western tennessee. When I make a plot of it, there may be a high skewed distribution. Therefore, this model shuold be predicted with transformation.
+
+*****************
+
+2.  We have discussed in class that the numerical value of a probability is never directly observed, only the resulting class label (we don't know the probability that a web surfer will click on an ad, we just know of those that have visited the site hosting the ad which ones have and haven't clicked).  However, they can be estimated from data.  When we do, we talk about the "margin of error" (ME) associated with the estimate (from STAT 201, we say that we are 95% confidence that the numerical value of the probability is within plus or minus one ME).  The margin of error is at most one over the square root of the sample size, i.e., `ME <= 1/sqrt(n)`.
+
+a)  If a sample of size 800 has been collected, what is the maximum size of the margin of error?
+
+**Response:**  The maximum size of the margin of error is 0.03535534.
+
+b)  If you want to the ME to be at most 0.01 (i.e., at most 1%), what is the maximum sample size that must be obtained?  
+
+**Response:** The maximimum size that must be obtained is 10000.
+
+c)  The precision to which probabilities need to be estimated can vary a lot based on context.  For example, someone studying a link between ingestion of a particular food and cancer may be interested in seeing whether the probability is even 0.001 larger than the baseline rate.  If we were comparing the probabilities of clicking on a piece of "fake news" based on which of two provocative headlines are used, what would consider a "big enough" difference for you to care about?  Justify your answer.  If you needed the margin of error to be at most this difference, at most how many individuals would you need to consider?
+
+**Response:**  : If the margin of error to be at most 1%, I need to consider (1/0.01)^2=10000 individuals.
+
+*****************
+
+
+3.  We have discussed the false positive rate (FPR), true positive rate (TPR), false negative rate (FNR), and true negative rates (TNR).  Two pairs of these quantities will always add up to 100%.  Which ones?
+
+**Response:**  FPR+TNR=100% and TPR+FNR=100%;
+
+*****************
+
+
+4.  "Overfitting" is our biggest fear when we develop a predictive model.  In package `regclass`, `overfit_demo` provides an illustration that shows what happens when a model becomes "overfit" as it gets overly complex (by adding too many variables).  Run `overfit_demo` (NOT the updated version in the .R files that accompany the notes) using the `OFFENSE` data (predicting wins of NFL teams) shown in the help file for the function, except use `seed=2018`.  One of my favorite exam questions is to have you explain what story this type of plot is telling.  For this example, what is the optimal level of complexity (number of predictors) for this model?
+
+```{r Q4}
+library(regclass)
+data(OFFENSE)
+overfit_demo(OFFENSE,y="Win",seed=2018)
+```
+
+**Response:**  The optimal level of complexity for this model is when the number of variables is about 5, because the RMSE on holdout(new individual) begins to increase.
+
+*****************
+
+
+5.  We compare the accuracy/misclassification rate of a model with those made by the "naive model".  We compare the AUC of a model with a model that "guesses at random".  Imagine we are going to fit a model where 80% of individuals have the "No" class and 20% of individuals have the "Yes" class in the training data.  Explain the difference between how the naive and "guessing at random" models classify individuals.
+
+**Response:** The naive model predicts evryone in the majority level, but "guessong at random"" model guesses the same class for everyone. So the naive model will predict all individuals as the "No" class because they are the majority. And for random model, we make classifications by choosing a random number and if it's 1-8 we classify as "No" and if it's 9-10 we classify as "Yes".
+
+*****************
+
+
+6.  Learning how to specify the model you want to fit is a necessary skill!  Imagine the predictors are `x1`, `x2`, ..., `x50` and the variable we want to predict is `y`.  Fill in to the right of the `~` an appropriate "formula" so that the model predicts `y` from the combination of specified variables.  For example `y~x1` would predict `y` only from `x1`.  Fill in the set of backquotes provided.
+
+* All 50 predictor variables:  `y ~ .`
+
+* Just x4, x6, and x12:  `y ~ x4+x6+x12`
+
+* Just x4, x6, and x12, as well and their two way interactions:  `y ~ x4*x6*x12`
+
+* All 50 predictor variables as well as their two-way interactions:  `y ~ .^2`
+
+* All 50 predictor variables except x10 and x20:  `y ~ .-x10-x20`
+
+* All 50 predictor variables except x30, and also including two-way interactions between x20 and x21, and between x48 and x49:  `y ~.-x30+(x20:x21)+(x48:x49)`
+
+*****************
+
+7.  In nearly every example we will do, the split into training and holdout samples is done with the `sample` command so that which rows are picked to be in the two sets occur at random.  Why can't we just, say, let the first 20% of rows in the data be the holdout sample?  Come up with an example where this would be a bad idea.  Hint:  whatever splitting method we use is "fine" as long as there is *no systematic difference in the characteristics of individuals* in the holdout sample and in the training samples.
+
+**Response:**  Because we cannot generate random sample in this way. There will be systematic difference in the characteristics of individuals in the holdout sample and in the training sample. For example, if we sort all junk mails and safe mails, the first 20% of rows in data mat contains a lot of junk mails or good mails. Either situation will bring huge bias to the rusult.
+
+*****************
+
+8.  The `LAUNCH` dataset (in `regclass`) contains the (pre-transformed) net profits of a product a few months after its release and a few hundred (anonymized) characteristics of that product.  Let's get practice using `caret` and its `train` function for linear regression.
+
+a.  Split the data in 60% training and 40% holdout using the standard random number seed of 474.  Verify the first few rows and columns of `TRAIN` and `HOLDOUT` are as anticipated (i.e., print to the screen these entries).
+
+```{r 8a}
+data(LAUNCH)
+set.seed(474); train.rows <- sample(1:nrow(LAUNCH),size=0.6*nrow(LAUNCH))
+TRAIN <- LAUNCH[train.rows,]; HOLDOUT <- LAUNCH[-train.rows,]
+
+#TRAIN[1:3,1:6]
+#      Profit     x1   x2 x3     x4  x5
+#213 3.544068 320800 7600 57 135646 282
+#447 3.812913 421100 5500 50  55958  67
+#320 3.698970 281900 6100 42  77366 226
+#HOLDOUT[1:3,1:6]
+#    Profit      x1   x2 x3     x4   x5
+#1 3.544068 1463400 6000  5 152120  174
+#6 3.812913  887900 6200 30  84124  393
+#9 3.544068 3518300 5900 18 283838 1081
+```
+
+b.  Set up the `fitControl` object so that the generalization error of models will be estimated with 6 repeats of 4-fold crossvalidation.  There's nothing to print to the screen here.
+
+```{r 8b}
+fitControl <- trainControl(method="repeatedcv",number=4,repeats=6)
+```
+
+
+c.  Fit four models, calling them `MODEL1`, `MODEL2`, etc., that predict `Profit` from:
+
+* Just predictors `x1`, `x2`, ..., `x12` (these are the 12 main numerical predictors)
+
+* All predictors
+
+* Just predicts `x1`, `x2`, ..., `x12` along with all two-way interactions
+
+* Just `x1`, `x2`, `x3`, `x4`, `x7`, `x10`, `x12`, `x305`, `x372`, `x374`, `x399` and their interactions (a mix of some numerical predictors and some indicator variables)
+
+Print to the screen the results of `rbind`ing the `$results` components of the models.  REMEMBER TO HAVE `set.seed(474);` on the same line as `train` for each!  Ignore warnings about `rank-deficient fit`.  Sanity check, your RMSE for the third model coming out of `rbind` should be 0.4453189 (or very close to it; what version of `caret` you have changes some of the later decimals points).
+
+```{r q8c}
+set.seed(474); MODEL1 <- train(Profit~x1+x2+x3+x4+x5+x6+x7+x8+x9+x10+x11+x12,data=TRAIN,method="glm",trControl=fitControl)
+set.seed(474); MODEL2 <- train(Profit~.,data=TRAIN,method="glm",trControl=fitControl)
+set.seed(474); MODEL3 <- train(Profit~(x1+x2+x3+x4+x5+x6+x7+x8+x9+x10+x11+x12)^2,data=TRAIN,method="glm",trControl=fitControl)
+set.seed(474); MODEL4 <- train(Profit~(x1+x2+x3+x4+x7+x10+x12+x305+x372+x374+x399)^2,data=TRAIN,method="glm",trControl=fitControl)
+rbind( MODEL1$results, MODEL2$results, MODEL3$results, MODEL4$results ) 
+```
+
+d.  Yes, `MODEL2` really is that bad.  What "key word" would we use to describe `MODEL2`?  
+
+**Response:**  The generation error(RMSE) made by model 2 is lager than other three models. 
+
+
+e.  Is there any compelling reason to prefer one of the models over all the others?  Justify your answer.
+
+**Response:**  Yse, the model 1 will be preferred, because the model 1 has the lowest generation error which is 0.2884084 and RMSE of other models are out of 1 SD to lowest one. 
+
+
+
+
+f.  Part (e) let's you know which model(s) are acceptable, and your final model would be selected from (e).  Out of curiosity, let's fit all four models on the holdout sample and look at the generalization error for that particular set of individuals.  
+
+* Have your code print to the screen all four errors.  
+
+* Comment on which one happens to perform best on this holdout sample and whether it was the model you expected to perform the best 
+* Comment whether the model with the lowest error as estimated in (c) has any signs of being overfit (10% rule).
+
+```{r q8f}
+p.model1 <- predict(MODEL1,newdata=HOLDOUT)
+sqrt( mean( (HOLDOUT$Profit - p.model1)^2 ) )
+p.model2 <- predict(MODEL2,newdata=HOLDOUT)
+sqrt( mean( (HOLDOUT$Profit - p.model2)^2 ) )
+p.model3 <- predict(MODEL3,newdata=HOLDOUT)
+sqrt( mean( (HOLDOUT$Profit - p.model3)^2 ) )
+p.model4 <- predict(MODEL4,newdata=HOLDOUT)
+sqrt( mean( (HOLDOUT$Profit - p.model3)^2 ) )
+```
+
+**Response:**   MODEL1 predicts the best on the holdout sample.
+
+
+
+g.  Although BAS 474 is not focused on descriptive analytics, look at `summary(MODEL1)` and find the coefficient of `x9`.  Give a masterful interpretation of this number.  Remember that the entities in the data are products, though we don't really know what the context of `x9` is.
+
+**Response:**  The coefficient of x9 is -1.515e-02, which means for every one more unit increased with x9, there would be decrease in y for 1.515e-02 units.
+
+
+
+h.  Provide a ranked list of variable importances to the best model.
+
+```{r Q8h}
+varImp(MODEL1)
+```
+
+
+*****************
+
+
+9.  The `EX6.WINE` dataset (in `regclass`) contains the quality rating of wines (column `Quality`, levels "High" and "Low") along with about a dozen chemical characteristics.   Let's get practice using `caret` and its `train` function for logistic regression.
+
+a.  Split the data in 75% training and 25% holdout using the standard random number seed of 474.  Verify the first few rows and columns of `TRAIN` and `HOLDOUT` are as anticipated (i.e., print to the screen these entries).
+
+```{r 9a}
+data(EX6.WINE)
+set.seed(474); train.rows2 <- sample(1:nrow(EX6.WINE),size=0.75*nrow(EX6.WINE))
+TRAIN <- EX6.WINE[train.rows2,]; HOLDOUT <- EX6.WINE[-train.rows2,]
+
+
+#TRAIN[1:3,1:4]
+#     Quality fixed.acidity volatile.acidity citric.acid
+#879     High           7.0             0.17        0.74
+#1850    High           5.2             0.31        0.36
+#1327     Low           6.6             0.22        0.28
+#HOLDOUT[1:3,1:4]
+#   Quality fixed.acidity volatile.acidity citric.acid
+#4     High           6.6             0.16        0.40
+#9     High           6.2             0.66        0.48
+#13    High           7.2             0.32        0.36
+```
+
+b.  Set up the `fitControl` object so that the generalization error of models (let's assess the AUC) will be estimated via vanilla 5-fold crossvalidation.
+
+```{r 9b}
+fitControl <- trainControl(method="cv",number=5,classProbs=TRUE,summaryFunction=twoClassSummary)
+```
+
+c.  Fit four models, calling them `MODEL1`, `MODEL2`, etc., that predict `Profit` from:
+
+* All predictors
+
+* All predictors with all two way interactions
+
+* Just predicts with `alcohol` and `density`
+
+* Just predicts with `alcohol` and `density` and its interaction
+
+
+Print to the screen the results of `rbind`ing the `$results` components of the models.  REMEMBER TO HAVE `set.seed(474);` on the same line as `train` for each!  Sanity check:  the entry in the ROC column for model 1 should be `0.8870955` (or at least very close to it, different versions of `caret` give different results in later decimal places). 
+
+```{r q9c}
+set.seed(474); MODEL1 <- train(Quality~.,data=EX6.WINE,method="glm",trControl=fitControl,metric="ROC")
+set.seed(474); MODEL2 <- train(Quality~.^2,data=EX6.WINE,method="glm",trControl=fitControl,metric="ROC")
+set.seed(474); MODEL3 <- train(Quality~alcohol+density,data=EX6.WINE,method="glm",trControl=fitControl,metric="ROC")
+set.seed(474); MODEL4 <- train(Quality~(alcohol+density)^2,data=EX6.WINE,method="glm",trControl=fitControl,metric="ROC")
+rbind(MODEL1$results,MODEL2$results,MODEL3$results,MODEL4$results)
+
+```
+
+d.  Is there any compelling reason to prefer one of the models over all the others?  Justify your answer.
+
+**Response:** Model 2 will be preferred, because the AUC of other models are out of 1 SD to highest AUC.
+
+
+
+e.  Another model achieves an estimated AUC of 0.933 with an SD of 0.018.  Is this model (compellingly) better than Models 1-4 that you fit?  Explain.
+
+**Response:** No, because its AUC is within 1 SD to highest AUC of models.
+
+
+
+f.  Parts (c) and (d) let's you know which model(s) are acceptable and your final model would be selected using those results.  Out of curiosity, let's fit all four models on the holdout sample and look at the generalization error for that particular set of individuals.  
+
+* Have your code print to the screen all four AUCs on the holdout as well as all four accuracies.
+
+* Comment on which model happens to perform best on this holdout sample in terms of AUC, and whether it also performs best in Accuracy.
+
+* Comment on whether the best model if (c) shows any signs of being overfit (10% rule).
+
+
+```{r q9f}
+#Accuracy
+p.model1 <- predict(MODEL1,newdata=HOLDOUT)
+mean( HOLDOUT$Quality == p.model1 )
+
+p.model2 <- predict(MODEL2,newdata=HOLDOUT)
+mean( HOLDOUT$Quality == p.model2 )
+
+p.model3 <- predict(MODEL3,newdata=HOLDOUT)
+mean( HOLDOUT$Quality == p.model3 )
+
+p.model4 <- predict(MODEL4,newdata=HOLDOUT)
+mean( HOLDOUT$Quality == p.model4 )
+
+#AUC
+library(pROC)
+roc(HOLDOUT$Quality, predict(MODEL1,newdata=HOLDOUT,type="prob")$Low   )
+roc(HOLDOUT$Quality, predict(MODEL2,newdata=HOLDOUT,type="prob")$Low   )
+roc(HOLDOUT$Quality, predict(MODEL3,newdata=HOLDOUT,type="prob")$Low   )
+roc(HOLDOUT$Quality, predict(MODEL4,newdata=HOLDOUT,type="prob")$Low   )
+```
+
+**Response:** Model 2 also performs best in terms of AUC.  No models show any signs of overfitting because the actual error on the holdout is no more than 10% worse than the estimated error with crossvalidation.
+
+
+
+g.  Provide a ranked list of variable importances to the best model.
+
+```{r Q9g}
+varImp(MODEL2)
+```
+
+
+*****************
+
+FYI:  I didn't include any problems where you interpreted the coefficient of an indicator variable in a linear regression, or where you interpreted the coefficient of a numerical predictor or indicator for a logistic regression.  Although this is the realm of descriptive analytics and BAS 320, be ready to do so on the midterm exam.

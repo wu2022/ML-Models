@@ -1,0 +1,535 @@
+---
+title: "Assignment 10 - Classification with Naive Bayes and Discretization"
+author:  Xuezhi Wu
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+#do not change this code
+knitr::opts_chunk$set(echo = TRUE,collapse=TRUE)
+library(regclass)
+library(e1071)
+library(discretization)
+library(caret)
+library(arules)
+library(pROC)
+
+
+combine_levels <- function(DATA,method="none",threshold=0,target=6,train.rows=NA,newname="Combined",seed=NA) {
+  if( mean(complete.cases(DATA)) < 1 ) { stop("Object cannot contain any missing values")}
+  require(discretization)
+  require(regclass)
+  
+  #First combine rare levels if requested by having threshold > 0
+  if(threshold == 0 | is.na(threshold)) { invisible("Not doing anything") } else { 
+    x <- c()
+    if(class(DATA) %in% c("character","factor") ) {  x <- factor(DATA) }
+    if(class(DATA) %in% c("matrix","data.frame") ) {
+      if( class(DATA[,1]) %in% c("character","factor")) { x <- factor(DATA[,1]) } }
+    if(class(x) == "factor") {
+      rare.levels <- names( which( sort( table(x) ) <= threshold ) )
+      if(length(rare.levels)>0) { 
+        levels(x)[ which(levels(x) %in% rare.levels) ] <- newname
+        ST <- sort(table(x))
+        if(ST[newname]<=threshold) {  #If combined is still rare, combine that with next most rare level
+          levels.to.combine <- which( levels(x) %in% c(newname,names(ST)[2]))
+          levels(x)[levels.to.combine] <- newname
+          rare.levels <- c(rare.levels,names(ST)[2]) }
+      }
+      if(class(DATA) %in% c("character","factor") ) {  DATA <- x }
+      if(class(DATA) %in% c("matrix","data.frame") ) { DATA[,1] <- x } }
+    if( class(x) == "NULL" ) { stop("Cannot combine rare levels of x unless is a categorical variables")}
+  }
+  
+  #If combination of rare levels only (no discretization), we're done
+  if(method=="none") { return(list(Details=NULL,newlevels= x ) ) }
+  
+  #Handle case where unsupervised discretization is taking place (DATA MUST BE a numerical vector)
+  if( method %in% c("interval","frequency","cluster") ) {
+    if( class(DATA) %in% c("numeric","integer") ) { 
+      old.values <- DATA
+      n.levels <- target  #change to what you want
+      if( !is.na(seed) ) { set.seed(seed) }  #Set random number seed if seed was passed as argument
+      x.cluster <- discretize(DATA,method=method,categories=n.levels,onlycuts = TRUE)
+      
+      DATA <- factor(
+        paste("level",pmin(pmax(sapply(DATA,function(x)sum(x>=x.cluster)),1),length(x.cluster)-1),sep=""),
+        ordered=TRUE,levels=paste("level",1:(length(x.cluster)-1),sep="") )
+      A <- aggregate(old.values~DATA,FUN=mean)
+      names(A) <- c("NewValue","yAverage")
+      return(list(Details=A,newlevels= DATA ) )
+    } }
+  
+  
+  #Now do supervised discretization cases; now need to worry whether to do it to whole data or just training
+  #HALFDISC is be name of dataframe where discretization is derived from here on out
+  
+  if(class(DATA)=="matrix") { DATA <- as.data.frame(DATA) }
+  if( !(class(DATA)=="data.frame") ) { stop("Supervised discretization requires dataframe with 1st column x 2nd column y")}
+  if( ncol(DATA) != 2 ) { stop("Supervised discretization requires dataframe with 1st column x 2nd column y") }
+  
+  
+  names(DATA) <- c("x","y")
+  DATA$rownumbers <- 1:nrow(DATA)
+  #If a vector of training rows is given, make sure to respect that; discretization scheme should be developed on training
+  if( length(train.rows)>1 ) { HALFDISC <- DATA[train.rows,] } else { HALFDISC <- DATA }
+  
+  HALFDISC$y <- factor(HALFDISC$y)
+  #Make sure function can proceed:  discretizing when y is a 2-level categorical variable
+  if(nlevels(HALFDISC$y)!=2) { stop("Supervised discretization must have y be categorical with 2 levels") }
+  
+  #Handle the case where x is a categorical variable.  My own heuristic.  Let each level be represented by
+  #the fraction of individuals of that level with y's 1st level alphabetically
+  if( class(HALFDISC$x) %in% c("character","factor") ) {
+    #Treat levels as numerical by calculating the proportion of individuals with 1st level alphabetically
+    A <- aggregate(y~x,data=HALFDISC,FUN=function(x)mean(x==levels(x)[1])) 
+    A <- A[order(A[,2]),]
+    names(A) <- c("level","value")
+    HALFDISC <- merge(HALFDISC,A,by.x="x",by.y="level")
+    HALFDISC <- HALFDISC[order(HALFDISC$rownumbers),]
+    HALFDISC$rownumbers <- NULL; rownames(HALFDISC) <- NULL
+    if( method %in% c("interval","frequency","cluster") ) {
+      n.levels <- target  #change to what you want
+      if( !is.na(seed) ) { set.seed(seed) }  #Set random number seed if seed was passed as argument
+      thresholds <- discretize(HALFDISC$value,method=method,categories=n.levels,onlycuts = TRUE)
+    } 
+    if (method == "mdlp" ) {
+      disc.scheme <- mdlp(HALFDISC[,c("value","y")])
+      cutoffs <- sort( unlist( disc.scheme$cutp ) )
+      if(cutoffs[1] != "All" ) { thresholds <- c(min(HALFDISC$value), cutoffs, max(HALFDISC$value))  } else { 
+        thresholds <- c(min(HALFDISC$value)-1,max(HALFDISC$value)+1)
+      }
+    }
+    HALFDISC$newlevels <- factor( paste("level",pmin(pmax(sapply(HALFDISC$value,function(x)sum(x>=thresholds)),1),length(thresholds)-1),sep=""),
+                                  ordered=TRUE,levels=paste("level",1:(length(thresholds)-1),sep=""))
+    #HALFDISC has original x/y values, the numerical equivalent of that level, and new level identity
+    #Make M be a lookup table
+    M <- HALFDISC[,c("x","newlevels")]
+    M <- M[order(M$newlevels),]
+    M <- M[!duplicated(M),]  
+    M <- merge(M,A,by.x="x",by.y="level")
+    M <- M[order(M$x),]  #M is now a lookup table giving old and new levels and numerical equivalent
+    
+    RESULT <- merge(DATA,M,by="x")  #RESULT is the old values of x/y, newlevels, and numerical equivalent
+    RESULT <- RESULT[order(RESULT$rownumbers),]; rownames(RESULT) <- NULL; 
+    to.return <- list(Details=data.frame(OldValue=M$x,yAverage=M$value,NewValue=M$newlevels),newlevels= RESULT$newlevels ) 
+  }
+  
+  #Handle the case where x is a numerical variable
+  if( class(HALFDISC$x) %in% c("numeric","integer") ) {
+    #Treat levels as numerical by calculating the proportion of individuals with 1st level alphabetically
+    if( method %in% c("interval","frequency","cluster") ) {
+      n.levels <- target  #change to what you want
+      if( !is.na(seed) ) { set.seed(seed) }  #Set random number seed if seed was passed as argument
+      thresholds <- discretize(HALFDISC$x,method=method,categories=n.levels,onlycuts = TRUE)
+    } 
+    if (method == "mdlp" ) {
+      disc.scheme <- mdlp(HALFDISC[,1:2])
+      cutoffs <- sort( unlist( disc.scheme$cutp ) )
+      if(cutoffs[1] != "All" ) { thresholds <- c(min(HALFDISC$x), cutoffs, max(HALFDISC$x) )  } else { 
+        thresholds <- c(min(HALFDISC$x)-1,max(HALFDISC$x)+1)
+      }
+    }
+    HALFDISC$newlevels <- factor( paste("level",pmin(pmax(sapply(HALFDISC$x,function(x)sum(x>=thresholds)),1),length(thresholds)-1),sep=""),
+                                  ordered=TRUE,levels=paste("level",1:(length(thresholds)-1),sep=""))
+    #HALFDISC has original x/y values, the numerical equivalent of that level, and new level identity
+    #Make M be a lookup table
+    M <- HALFDISC[,c("x","newlevels")]
+    
+    M <- M[order(M$x),]
+    M <- M[!duplicated(M),]  #M is now a lookup table giving old and new levels and numerical equivalent
+    A <- aggregate(y~newlevels,data=HALFDISC,FUN=function(x)mean(x==levels(x)[1]))
+    M <- merge(M,A,by="newlevels")
+    Details <- data.frame(OldValue=M$x,yAverage=M$y,NewValue=M$newlevels)
+    A1 <- aggregate(OldValue~NewValue,data=Details,FUN=min)
+    names(A1)[2] <- "Minimum"
+    A2 <- aggregate(OldValue~NewValue,data=Details,FUN=max)
+    names(A2)[2] <- "Maximum"
+    A.final <- merge(A1,A2,by="NewValue")
+    temp <- M[,c("newlevels","y")]
+    temp <- temp[!duplicated(temp),]
+    A.final$yAverage=temp$y
+    
+    RESULT <- merge(DATA,M,by="x",all.x=TRUE)  #RESULT is the old values of x/y, newlevels, and numerical equivalent
+    bad.rows <- which(is.na(RESULT$newlevels))
+    if(length(bad.rows)>0) {
+      bad.x <- RESULT[is.na(RESULT$newlevels),1]
+      bad.levels <- sapply(bad.x,function(x){m1<-which(A.final$Minimum<=x); ifelse(length(m1)<1,1,max(which(x>=A.final$Minimum))) })
+      RESULT$newlevels[bad.rows] <- factor( paste("level",bad.levels,sep=""))    
+      }
+    summary(RESULT)
+    RESULT <- RESULT[order(RESULT$rownumbers),]; rownames(RESULT) <- NULL; 
+    to.return <- list(Details=A.final,newlevels= RESULT$newlevels ) 
+  }
+  return(to.return)
+}
+
+
+
+```
+
+**Note:** Problems 1 and 4 are programming problems.  I have mentioned that, tentatively, part of the "take-home" final will be done the last day of the course.  Problems 1 and 4 represent about the level of difficulty I'd be aiming for.
+
+*****
+
+1.  The AUC (area under the ROC curve) is often used in business analytics to gauge the utility of a model because it tells us how well the model ranks probabilities.  If a company needs to select the "500 customers most likely to ...", then the higher the value of AUC, the better the model will be at coming up with a list.  
+
+The numerical value itself can be interpreted to add meaning.  If a random member of the "Yes" class is selected along with a random member of the "No" class, and the model scores both of them, the AUC tells us the probability that the model would give a higher score to the member of the Yes class.
+
+In this problem you will write a function called `my_auc` which takes two arguments:  `actual` (a vector of class labels) and `predicted` (a vector of scores or probabilities given by a model); no default values.  Your function will systematically go through each pair of individuals (with one being from the "Yes" class and the other being from the "No" class) and find the fraction of pairs whose scores/probabilities are ranked correctly.  
+
+As with all functions, it's easiest to build this up in pieces.  Let's work with the following definitions of `actual` and `predicted`.
+
+```{r q1}
+set.seed(2018); actual <- sample( factor( rep( c("Yes","No"), 8) ) )  #actual classes
+actual
+set.seed(2018); predicted <- round( runif(16,1,100), digits=4 ) #random numbers between 1 and 100
+predicted
+```
+
+a)  Make a dataframe called `INFO` whose first column contains the elements of `actual` and whose second column contains the elements of `predicted` (the columns should be named "actual" and "predicted", respectively).  Include the results of running `head`.
+
+```{r q1a}
+INFO<-data.frame(actual,predicted)
+head(INFO,3)
+#Running head(INFO,3) should give the following results
+#  actual predicted
+#1     No   34.2792
+#2    Yes   46.9086
+#3    Yes    6.9980
+```
+
+b)  Make two new dataframes:  `YES` and `NO` which contain the rows in `INFO` corresponding to "Yes" class and which contain the rows in `INFO` corresponding to the "No" class, respectively.  Include the output of the two `head` commands.
+
+```{r q1b}
+YES<-INFO[which(INFO$actual=="Yes"),]
+NO<-INFO[which(INFO$actual=="No"),]
+
+
+head(YES,3)
+#  actual predicted
+#2    Yes   46.9086
+#3    Yes    6.9980
+#4    Yes   20.5459
+head(NO,3)
+#  actual predicted
+#1     No   34.2792
+#5     No   47.9571
+#6     No   30.8038
+```
+
+c)  Consider the score in the first row of `YES`.  Calculate the fraction of scores in `NO` that are smaller than this score, and store it in a variable called `p.correctrank`.  Print the contents of `p.correctrank` to the screen.  You should find this is 0.375.
+
+```{r q1c}
+p.correctrank<-sum(NO$predicted<46.9086)/nrow(NO)
+p.correctrank
+```
+
+d)  Now write a `for` loop that does this for each score in `YES`.  In other words, define `p.correctrank` to be an empty vector, then write a `for` loop that defines the first element of `p.correctrank` to be the fraction of scores in `NO` that are smaller than the score in the first row of `YES`, defines the second element of `p.correctrank` to be the fraction of scores in `NO` that are smaller than the score in the second row of `YES`, etc.   Print out 8 elements of `p.correctrank` to the screen.
+
+```{r q1d}
+for (i in 1:nrow(YES)) {
+  p.correctrank[i]<-sum(NO$predicted<YES$predicted[i])/nrow(NO)
+}
+p.correctrank
+
+```
+
+e)  Define `AUC` to be the average of the values in `p.correctrank`.  The average of this vector gives the overall fraction of pairs of individuals who scores are ranked correctly, so it gives a good approximation to the AUC.  Print the contents out to the screen and verify it equals 0.46875 (not a very good number, but this data was generated purely at random).
+
+```{r q1e}
+AUC<-mean(p.correctrank)
+```
+
+f)  Now modify your code so that it works inside the function  `my_auc`, i.e., for arbitrary vectors `actual` and `predicted` (you can assume that `actual` will always contain "Yes" and "No").  Make sure you `return` the AUC!  
+
+Test your function on the vectors `scores.for.individuals` and `actual.classes` defined by the code below (probabilities/classes for wine quality).  You should find an answer close to 0.88.  Note:  the `roc` function we have been using to calculate the areas under the ROC curve proceeds in a different way to estimate the AUC, so its value will be slightly different.
+
+```{r q1f}
+my_auc <- function(actual.classes,scores.for.individuals) {
+  INFO<-data.frame(actual.classes,scores.for.individuals)
+  YES<-INFO[which(INFO$actual.classes=="Yes"),]
+  NO<-INFO[which(INFO$actual.classes=="No"),]
+  for (i in 1:nrow(YES)) {
+  p.correctrank[i]<-sum(NO$scores.for.individuals<YES$scores.for.individuals[i])/nrow(NO)
+  }
+  AUC<-mean(p.correctrank)
+return(AUC)
+}
+
+
+library(regclass); library(caret)
+data(WINE)
+levels( WINE$Quality ) <- c("No","Yes")  #recode levels so that high=No and low=Yes
+set.seed(2018); M <- train(Quality~.,data=WINE,method="knn",
+                           trControl=trainControl(method="none",classProbs=TRUE), tuneGrid=expand.grid(k=8))
+scores.for.individuals <- predict(M,newdata=WINE,type="prob")[,2]
+actual.classes <- WINE$Quality
+my_auc(actual.classes,scores.for.individuals)  
+
+library(pROC)
+roc(actual.classes,scores.for.individuals)  #Estimated via algorithm, not the actual fraction of pairs ranked correctly
+```
+
+***************
+
+2.  The `glass` dataset is a classic dataset used to test classification algorithms.  The goal is to classify a piece of glass based on 9 chemical characteristics into one of six classes (labeled 1-7 but with no class 4).  
+
+a.  Read in the data from `glass.csv` and name it `GLASS`.  `Type` is currently an integer 1-7.  Convert it into a factor containing upper-case letters, e.g. class 1 should be A, class 2 should be B, etc.  Trying running `factor` on `LETTERS[GLASS$Type]`, since the latter code find letter in the relevant position in the alphabet.   Print to the screen a `summary` of the `Type` column.
+
+```{r glass classification}
+GLASS <- read.csv("glass.csv")
+GLASS$Type <- factor(LETTERS[GLASS$Type])
+summary(GLASS$Type)
+```
+
+b.  Using the 2018 random number seed, split the data into 60% training and 40% holdout.  You should find the following summaries of the `Type` columns.
+
+```{r glass split}
+set.seed(2018);train.rows <- sample(1:nrow(GLASS),0.6*nrow(GLASS))
+TRAIN <- GLASS[train.rows,]; HOLDOUT <- GLASS[-train.rows,]
+#summary(TRAIN$Type)
+# A  B  C  E  F  G 
+#47 42  7  7  5 20 
+#summary(HOLDOUT$Type)
+# A  B  C  E  F  G 
+#23 34 10  6  4  9 
+```
+
+c.  We'll use `naiveBayes` instead of `train` from `caret` since the latter has issues.  Fit the model on the training set and make predictions on the holdout sample.  Find the accuracy of the model on the holdout, and compare that to the accuracy of the Naive model (note:  be very careful in identifying that class that the naive model would predict for everyone).
+
+```{r glass caret}
+library(e1071)
+NB <- naiveBayes(Type~.,data=TRAIN)
+classifications <- predict(NB,newdata=HOLDOUT)
+predictions <- predict(NB,newdata=HOLDOUT,type="raw")
+ 
+mean(classifications == HOLDOUT$Type)
+ 
+table(TRAIN$Type)
+mean(TRAIN$Type=="A")
+```
+
+**Response:**  The Naive model will predict every type of glass to be A, and the accuracy of Naive model is 0.3671875; The accuracy of Naive Bayes model is 0.3953, which is higher than that of Naive model. 
+
+
+
+
+d.  Maybe discretization of the numerical predictors would help since some are not Normally distributed (e.g., columns Mg, K).  Define `GLASS.DISC` to be a copy of the `GLASS` dataframe.  Following the cheat sheet or other examples, use a "for" loop to replace the i-th column (columns 1-9) of `GLASS.DISC` with the result of running `combine_levels(GLASS[,i],method="cluster",target=4,seed=474)$newlevels` (i.e., four categories found with the cluster method).
+
+Split `GLASS.DISC` into `TRAIN.DC` and `HOLDOUT.DC` using the existing definition of `train.rows`, fit the Naive Bayes model on `TRAIN.DC` and find the accuracy on `HOLDOUT.DC`.  Has discretization improved the performance of the model?  Comment.
+
+```{r glass discrete}
+GLASS.DISC <- GLASS
+for (i in 1:9) {
+GLASS.DISC[,i]<-combine_levels(GLASS[,i],method="cluster",target=4,seed=474)$newlevels
+}
+
+set.seed(2018);train.rows <- sample(1:nrow(GLASS.DISC),0.6*nrow(GLASS.DISC))
+TRAIN.DC <- GLASS.DISC[train.rows,]; HOLDOUT.DC <- GLASS.DISC[-train.rows,]
+NB.DC <- naiveBayes(Type~.,data=TRAIN.DC)
+classifications <- predict(NB.DC,newdata=HOLDOUT.DC)
+mean(classifications == HOLDOUT.DC$Type)
+
+
+#head(GLASS.DISC,3)
+#      RI     Na     Mg     Al     Si      K     Ca     Ba     Fe Type
+#1 level3 level3 level4 level2 level2 level1 level2 level1 level1    A
+#2 level2 level3 level4 level2 level3 level2 level1 level1 level1    A
+#3 level1 level3 level4 level3 level3 level2 level1 level1 level1    A
+
+```
+
+**Response:**  The accuracy of Naive Bayes model is 0.6395349, which is higher than the model before discretization, so discretization has improved the performance of the model
+
+
+
+
+e.  Discretization sidesteps Naive Bayes' need to assume Normality of any numerical predictors.  An additional assumption made by Naive Bayes is that the characteristics of all individuals are independent/uncorrelated with each other (usually a laughably bad assumption).  Examine a scatterplot of some of the predictor variables with `plot(GLASS[,c("RI","Ca","Na","K","Si")])`.  Which predictors are strongly correlated?
+
+```{r q2e}
+plot(GLASS[,c("RI","Ca","Na","K","Si")],pch=20)
+```
+
+**Response:**  From th plot, RI and Ca are strongly correlated.
+
+
+
+f.  Why can't we use logistic regression to make classifications here?
+
+**Response:**  There are more than 2 classes so logistic regression won't work.
+
+
+
+g.  Partition models have no problems with multi-class problems like this.  Using the `fitControl` and `rfGrid` objects defined (no tuning, just a value of `mtry` of 4), find the accuracy on the holdout sample of a random forest model built by `train` on the original version of the training data and on the discretized version.  Discretization doesn't help out the random forest here, and not too surprisingly it blows Naive Bayes out of the water.
+
+```{r partition}
+fitControl <- trainControl(method="none",classProbs=TRUE)  
+rfGrid <- expand.grid(mtry=4)
+#RF <- randomForest(Type~.,data=TRAIN, method="rf", trControl=fitControl, tuneGrid=rfGrid )
+RF.DC <- randomForest(Type~.,data=TRAIN.DC, method="rf", trControl=fitControl, tuneGrid=rfGrid )
+classifications <- predict(RF.DC,newdata=HOLDOUT.DC) 
+mean(classifications == HOLDOUT.DC$Type)
+```
+
+***********
+
+3.  Load in `BAS474HW10.RData`.  This contains the `WATER` dataframe which you used in the previous homework.  The goal is to predict whether a well in Tanzania is functional or not (`Status` column) based on a set of characteristics like the amount of water coming out of it, the year it was built, altitude, amount of surrounding population, etc. 
+
+a.  Using the random number seed 2018, split the data into 50% training and 50% holdout.  Fit the Naive Bayes (using `naiveBayes`) and Random Forest (using `randomForest` instead of `train`) models on the training sample and find the accuracy and AUC on the holdout sample.
+
+```{r q3,warning=FALSE}
+load("BAS474HW10.RData")
+set.seed(2018);train.rows <- sample(1:nrow(WATER),0.5*nrow(WATER))
+TRAIN <- WATER[train.rows,]; HOLDOUT <- WATER[-train.rows,]
+
+NB <- naiveBayes(Status~.,data=TRAIN)
+classifications <- predict(NB,newdata=HOLDOUT)
+predictions <- predict(NB,newdata=HOLDOUT,type="raw")
+mean(classifications == HOLDOUT$Status)
+roc(HOLDOUT$Status,predictions[,2])
+
+FOREST <- randomForest(Status~.,data=TRAIN)
+classifications <- predict(FOREST,newdata=HOLDOUT)
+predictions <- predict(FOREST,newdata=HOLDOUT,type="prob")
+mean(classifications == HOLDOUT$Status)
+roc(HOLDOUT$Status,predictions[,2])
+
+
+#TRAIN[1:3,1:3]
+#          Status     Quantity YearBuilt
+#12157 functional       enough      2009
+#16770 functional       enough      1995
+#2191  functional insufficient      1982
+#HOLDOUT[1:3,1:3]
+#         Status Quantity YearBuilt
+#3    functional   enough      2009
+#4 nonfunctional      dry      1986
+#6    functional   enough      2011
+```
+
+**Response:**  The accuracy and AUC of Naive Bayes model are 0.7715961 and 0.8463; The accuracy and AUC of Random Forest model are 0.8553257 and 0.9222
+
+
+
+
+b.  Using the "mdlp" method for `combine_levels`, discretize each numerical predictor in the `WATER` dataframe (make sure to pass `train.rows` as an argument).  Verify the result of running `head`, then resplit the discretized data into training and holdout.  Fit the Naive Bayes and random forest models on the discretized version of the training data and find the accuracies and AUCs using the discretized holdout sample.  Has performance improved?  Explain.
+
+```{r q3b,warning=FALSE}
+numeric.columns <- which( unlist(lapply(WATER,class)) %in% c("numeric","integer") )
+WATER.DISC <- WATER
+for (i in 2:ncol(WATER.DISC)) {
+WATER.DISC[,i]<-combine_levels(WATER[,c(i,1)],train.rows=train.rows,method="mdlp")$newlevels
+}
+
+set.seed(2018);train.rows <- sample(1:nrow(WATER.DISC),0.5*nrow(WATER.DISC))
+TRAIN.DC <- WATER.DISC[train.rows,]; HOLDOUT.DC <- WATER.DISC[-train.rows,]
+
+NB <- naiveBayes(Status~.,data=TRAIN.DC)
+classifications <- predict(NB,newdata=HOLDOUT.DC)
+predictions <- predict(NB,newdata=HOLDOUT.DC,type="raw")
+mean(classifications == HOLDOUT.DC$Status)
+roc(HOLDOUT.DC$Status,predictions[,2])
+
+FOREST <- randomForest(Status~.,data=TRAIN.DC)
+classifications <- predict(FOREST,newdata=HOLDOUT.DC)
+predictions <- predict(FOREST,newdata=HOLDOUT.DC,type="prob")
+mean(classifications == HOLDOUT.DC$Status)
+roc(HOLDOUT.DC$Status,predictions[,2])
+
+
+#head(WATER.DISC[,numeric.columns])
+#         Status YearBuilt Altitude log10Population log10WaterFlow
+#1    functional    level4   level4          level5         level4
+#2    functional    level5   level4          level6         level1
+#3    functional    level5   level3          level6         level3
+#4 nonfunctional    level3   level1          level4         level1
+#5    functional    level5   level1          level2         level3
+#6    functional    level5   level1          level6         level1
+
+
+```
+
+**Response:**  After discretize each numerical predictor in the `WATER` dataframe, the accuracy and AUC of Naive Bayes model are 0.7749143 and 0.8473, which has improved a little; The accuracy and AUC of Random Forest model are 0.8436014 and 0.9037, which has not improved.
+
+
+
+
+***************
+
+4.  K-fold crossvalidation has been our go-to for estimating the generalization error of a predictive model, but there are other techniques.  The "bootstrap" approach estimates the generalization error by generating "bootstrap training samples" (just like the trees on the random forest use) and calculating the error on the rows that get "left out".  Recall that a bootstrap training sample is made by randomly selecting rows from the original training dataset.  This selection is done with replacement, so some rows gets picked more than once, and other don't get picked at all.  
+
+Since `train` doesn't play well with Naive Bayes, let's write our own code to estimate the generalization error of the Naive Bayes via this bootstrap approach.
+
+```{r Q4 setup}
+#Loading up data, splitting into training/holdout, fitting naive bayes
+data("CUSTREACQUIRE")
+CUSTREACQUIRE$Lifetime2 <- NULL
+CUSTREACQUIRE$Value2 <- NULL
+set.seed(2018); train.rows <- sample(1:nrow(CUSTREACQUIRE),0.75*nrow(CUSTREACQUIRE))
+TRAIN <- CUSTREACQUIRE[train.rows,]; HOLDOUT <- CUSTREACQUIRE[-train.rows,]
+NB <- naiveBayes(Reacquire~.,data=TRAIN)
+mean( predict(NB,newdata=HOLDOUT) == HOLDOUT$Reacquire )
+
+```
+  
+a.  Create a vector called `boottrain.rows` that picks rows numbers from `TRAIN` with replacement.  The syntax looks a lot like how we pick rows from the original dataset to make the training set, with the additional argument `replace=TRUE` (so that we can pick the same row twice).  Create a dataframe called `PSEUDO.TRAIN` which are the rows appearing in `boottrain.rows` extracted from `TRAIN`.  Create a dataframe called `PSEUDO.HOLDOUT` which is "everything but" the unique integers that appear in `boottrain.rows`.  Verify the results of running `head`.
+
+```{r Q4a}
+set.seed(2018); boottrain.rows <- sample(1:nrow(TRAIN),nrow(TRAIN),replace=TRUE)
+PSEUDO.TRAIN <- TRAIN[boottrain.rows,]; PSEUDO.HOLDOUT <- TRAIN[-unique(boottrain.rows),]
+dim(PSEUDO.TRAIN)
+#375 7
+head(PSEUDO.TRAIN,3)
+#    Reacquire Lifetime1 OfferAmount Lapse PriceChange Gender Age
+#124       Yes       452          30    86        0.00   Male  40
+#60        Yes       478          25   107        0.00 Female  27
+#73         No       283          20   129       12.23   Male  58
+dim(PSEUDO.HOLDOUT)
+#128 7
+head(PSEUDO.HOLDOUT,3)
+#    Reacquire Lifetime1 OfferAmount Lapse PriceChange Gender Age
+#169        No       391          20   131        8.06 Female  66
+#150       Yes       813          20    37       26.11   Male  66
+#65        Yes       598          20   131      -11.73   Male  51
+```
+
+b.  Fit the Naive Bayes model on `PSEUDO.TRAIN` and store the accuracy on the holdout sample in a variable called `boot.accuracy`.  Print out `boot.accuracy` to the screen.
+
+```{r Q4b}
+NB <- naiveBayes(Reacquire~.,data=PSEUDO.TRAIN)
+classifications <- predict(NB,newdata=PSEUDO.HOLDOUT)
+predictions <- predict(NB,newdata=PSEUDO.HOLDOUT,type="raw")
+boot.accuracy<-mean(classifications == PSEUDO.HOLDOUT$Reacquire)
+boot.accuracy
+```
+
+c.  Now write a "for" loop that finds the accuracies of models trained on 100 bootstrapped training samples.  You've already written almost all the code you need.  Outside the "for" loop, initialize `boot.accuracy` to be an empty vector, then "looping over" integer 1, 2, ..., 100, store in the i-th element in `boot.accuracy` the accuracy found during the i-th time through the loop.  Only set the random number seed once (2018), and do it before the "for" loop.  Report the average value of `boot.accuracy` and its standard deviation (this is the estimated generalization error and the SD), and make a histogram of `boot.accuracy`.
+
+
+```{r Q4c}
+boot.accuracy<-c()
+set.seed(2018)
+for (i in 1:100) {
+  boottrain.rows <- sample(1:nrow(TRAIN),nrow(TRAIN),replace=TRUE)
+  PSEUDO.TRAIN <- TRAIN[boottrain.rows,]; PSEUDO.HOLDOUT <- TRAIN[-unique(boottrain.rows),]
+  NB <- naiveBayes(Reacquire~.,data=PSEUDO.TRAIN)
+  classifications <- predict(NB,newdata=PSEUDO.HOLDOUT)
+  predictions <- predict(NB,newdata=PSEUDO.HOLDOUT,type="raw")
+  boot.accuracy[i]<-mean(classifications == PSEUDO.HOLDOUT$Reacquire)
+}
+mean(boot.accuracy)
+sd(boot.accuracy)
+hist(boot.accuracy)
+```
+
+
+
+
+**Additional Note:**  This bootstrapped estimate of the generalization error can be found with `caret` using `method="boot"` instead of `method="cv"` or `method="repeatedcv"`!  For reasons that aren't completely clear to me, people tend to prefer crossvalidation instead of this bootstrap approach.
+
+
+
+

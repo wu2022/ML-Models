@@ -1,0 +1,424 @@
+---
+title: "Homework Set 9 - Boosting, SVMs, Neural Network  Models"
+author: "Xuezhi Wu"
+output:
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+#do not change this code
+knitr::opts_chunk$set(echo = TRUE,collapse=TRUE)
+options(width=200)
+options(digits=5)
+#The following packages are needed for this homework
+#If you do not have them, install.packages("packagename")
+library(regclass)  
+library(rpart)
+library(randomForest)
+library(gbm)
+library(caret)
+library(e1071)
+library(nnet)
+library(neuralnet)
+library(pROC)
+
+#The following 2 libraries are optional and allow you to do parallelization
+#library(parallel)
+#library(doParallel)
+```
+
+***************
+***************
+***************
+
+**For all problems in this homework, make sure to have `set.seed(474)` on the same line immediately before running `train` so we all get the same results.**
+
+***************
+***************
+***************
+
+##Task 1:  Regression revisited
+
+You used the `Electricity.csv` datafile last week.  It contains the daily electricity usage (`Usage`) of about 63 different households over the span of about two years.  Of particular interest is developing a predictive model for usage.  It is known that the most important factor that drives electricity usage is temperature (these households have electric heat and air-conditioning), but the relationship is complex.
+
+* `ID` - household ID
+
+* `Usage` - daily electricity usage of a household
+
+* `PayPlan` - Yes or No depending on whether they have signed up for a payment plan option
+
+* `DaylightHours` - the number of hours of daylight for that day
+
+* `coolinghours` - technical term that describes how hard an AC unit has to work (if at 3pm is 78 degrees, then that hour's contribution to `coolinghours` is 78-65=13; this is summed over all hours of the day, ignoring hours that are below 65)
+
+* `heatinghours` - technical term that describes how hard an electric unit has to work (if at 3pm is 32 degrees, then that hour's contribution to `heatinghours` is 65-32=33; this is summed over all hours of the day, ignoring hours that are above 65)
+
+* `HoursAbove65` - total number of hours for that day where temperature exceeded 65
+
+* `HoursBelow65` - total number of hours for that day where temperature was below 65
+
+* `low` - low temperature of the day
+
+* `high` - high temperature of the day
+
+* `median` - median value of the 24 hourly temperatures of the day
+
+* `mean` - mean value of the 24 hourly temperatures of the day
+
+* `q1` - 25th percentile of the 24 hourly temperatures of the day
+
+* `q3` - 75th percentile value of the 24 hourly temperatures of the day
+
+* `day` - day of week
+
+* `YearMonth` - year and month of that day
+
+
+1.  Data preprocessing steps  
+
+*  Read in `Electricity.csv` with `read.csv`, calling the dataframe `ELECTRICITY`.
+
+*  Replace the values of `Usage` with `log10(Usage)`.  
+
+*  Overwrite `ELECTRICITY` by taking a subset of only days that are Sunday (`Sun`)
+
+*  NULL out `day`, `ID`, `YearMonth`
+
+*  Overwrite `ELECTRICITY` by running `ELECTRICITY <- droplevels(ELECTRICITY)` so that levels that no longer appear in the data are erased.
+
+*  Verify `dim` and row 2018 are what is provided below
+
+*  Set up `fitControl` so that vanilla 5-fold crossvalidation is once again being used to estimate the generalization error (done for you, also allowing parallelization)
+
+*  Again, we will use the entirety of the `ELECTRICITY` dataframe to explore different models (but this time we will let `train` do the scaling for us).  Since we would base our final decision on whichever model has the lowest generalization error, this is ok.  By neglecting to make a holdout sample we lose the ability to verify the generalization is about what we expected (and that the model isn't overfit)
+
+```{r Task1.1}
+ELECTRICITY <- read.csv("Electricity.csv")
+ELECTRICITY$Usage <- log10(ELECTRICITY$Usage)
+ELECTRICITY <- subset(ELECTRICITY,day %in% c("Sun"))
+ELECTRICITY$ID <- NULL
+ELECTRICITY$day <- NULL
+ELECTRICITY$YearMonth <- NULL
+ELECTRICITY <- droplevels(ELECTRICITY)
+#dim(ELECTRICITY)
+#[1] 7769   13
+#ELECTRICITY[2018,]
+#             Usage PayPlan DaylightHours coolinghours heatinghours HoursAbove65 HoursBelow65   low  high median    mean
+#14084 0.9814108402      No            13         2.88       307.98            3           21 32.18 66.92  58.01 52.2875
+ #         q1     q3
+#14084 38.975 62.555
+
+fitControl <- trainControl(method="cv",number=5, allowParallel = TRUE, verboseIter = FALSE) 
+
+```
+
+2.  Let's explore a boosted tree model (this is the problem from last week's homework, with the only change being now that you are adding the `preProc` argument and working with the unscaled version of `ELECTRICITY`; if you did it then adjust your code accordingly).
+
+a.  Use the `gbmGrid` constructed below (normally a lot more tuning is performed, but in the interest of time, we'll only look at these parameters), save the output of `train` to `GBM`, and show the results of `GBM$results[rownames(GBM$bestTune),]`.   If you wish to use parallelization here it will speed up the fitting, but it is not required. Add the arguments `verbose=FALSE` and `preProc=c("center", "scale")` to `train` so that infinite output isn't generated and so that the predictors are scaled to have a mean of 0 and standard deviation of 1 (not neceessary for boosted tree models, but others required it, so might as well do it).  You should find your best estimated generalization error to be near 0.36.
+
+```{r Task1.2a}
+gbmGrid <- expand.grid(n.trees=c(200,500),
+                       interaction.depth=1:3,
+                       shrinkage=c(.05,.1),
+                       n.minobsinnode=c(2,5,10))
+#The following two lines set up parallelization if you have the relevent packages loaded up
+#cluster <- makeCluster(detectCores() - 1) 
+#registerDoParallel(cluster)
+
+#set.seed(474) and run train
+set.seed(474); GBM <- train(Usage~.,data=ELECTRICITY,method="gbm",trControl=fitControl,tuneGrid=gbmGrid,verbose=FALSE,preProc=c("center", "scale"))
+#The following two lines turn off parallelization if you used it
+#stopCluster(cluster)
+#registerDoSEQ()
+GBM$results[rownames(GBM$bestTune),]
+```
+
+
+b.  Load up `library(gbm)` and manually fit a boosted tree with `gbm` with `shrinkage=0.1,interaction.depth=1,n.minobsinnode=2,n.trees=200`.  Plot the relationship between Usage and the `mean` variable to see how the boosted tree has captured the nonlinearity in the relationship between Usage and the mean temperature of the day automatically (high on cold and hot days, low on pleasant days).  Do this also for the `low` (low temperature of the day) variable.
+
+```{r Task 1.2b}
+library(gbm)
+MYGBM <- gbm(Usage~.,data=ELECTRICITY,shrinkage=0.1,interaction.depth=1,n.minobsinnode=2,n.trees=200)
+plot(MYGBM,"mean")
+```
+
+3.  Let's explore support vector machines.  This technique projects the data into a higher-dimensional dataspace by creating new predictor variables from the ones that were collected.  It creates these variables implicitly using a "kernel" matrix, and there's a few common kernels people use.  The polynomial kernel makes powers (up to a specified number) of the predictor variables and interactions as new variables.  The Gaussian or Radial Basis kernel creates (in effect) an infinite number of polynomial terms.  The hope is that in this higher-dimensional dataspace, the relationships are linear enough to be well-model by a linear regression (with a twist).
+
+a.  Tune a support vector machine that uses a linear kernel (`method=svmLinear`), which is roughly equivalent to a linear regression with all predictors and all two-way interactions.  Try values of cost of 10 raised to the 0 power, 10 raised to the .5 power, 10 raised to the 1 power, 10 raised to the 1.5 power, and 10 raised to the 2 power.  Include the `SVM$results[rownames(SVM$bestTune),]`, assuming you saved the result of running `train` into `SVM`.  Once again, make sure to add the argument `preProc = c("center", "scale")` to `train` here since SVMs require scaling of the predictor variables.  Include `plot(SVM)` as well to get a visual of how the estimated generalization error varies with the cost parameter.  The estimated generalization error should be close to 0.37.
+
+```{r Task1.3a}
+svmGrid <- expand.grid(C=10^seq(0,2,by=0.5) )  
+set.seed(474); SVM <- train(Usage~.,data=ELECTRICITY, method='svmLinear', trControl=fitControl, verbose=FALSE, tuneGrid = svmGrid, preProc = c("center","scale"))
+SVM$results[rownames(SVM$bestTune),]
+plot(SVM)
+```
+
+
+b.  Tune a support vector machine that uses the radial basis kernel (`method=svmRadial`) with the following tuning parameters (I've pretuned it so a good model lurks within these four parameter combinations, but it still takes a fair amount of time).  Show the results of running `SVM$results[rownames(SVM$bestTune),]`, assuming you left-arrowed the object created by `train` into `SVM`.  Once again, make sure to add the argument `preProc = c("center", "scale")` to `train` here since SVMs require scaling of the predictor variables.
+
+```{r Task1.3b}
+svmGrid <- expand.grid(sigma=10^seq(-2,-1,by=.5),C=10^seq(-2,0,by=.5) )  
+set.seed(474); SVM <- train(Usage~.,data=ELECTRICITY, method='svmRadial', trControl=fitControl, verbose=FALSE,tuneGrid = svmGrid, preProc = c("center", "scale"))
+SVM$results[rownames(SVM$bestTune),]  
+```
+
+c.  Tune a support vector machine that uses a polynomial kernel (`method=svmPoly`) with the following tuning parameters (I've pretuned it so a good model lurks within these parameter combinations, but it still takes a good amount of time).  Show the results of running `SVM$results[rownames(SVM$bestTune),]`, assuming you left-arrowed the object created by `train` into `SVM`.  Once again, make sure to add the argument `preProc = c("center", "scale")` to `train` here since SVMs require scaling of the predictor variables.
+
+
+```{r Task1.3c}
+svmGrid <- expand.grid(degree=2:3,scale=10^seq(-2,-1,by=1),C=10^seq(-3,-2,by=.5) )  
+set.seed(474); SVM <- train(Usage~.,data=ELECTRICITY, method='svmPoly', trControl=fitControl, verbose=FALSE,tuneGrid = svmGrid, preProc = c("center", "scale"))
+SVM$results[rownames(SVM$bestTune),]
+```
+
+
+
+
+4.  Let's explore a neural network with a single hidden layer.  
+
+a.  Use the following grid to tune on the number of neurons that go into the hidden layer (`size`) and the regularization parameter (`decay`:  the penalty to giving large weights to any predictor).   Make sure to add the argument `preProc = c("center", "scale")` to `train` here since neural networks require scaling of the predictor variables, add `trace=FALSE` so that you don't get buried in output, and make sure that `linout=TRUE` since we are predicting a numerical response (`linout=FALSE` is `FALSE` only when doing classification).  Include a `plot` of the object created by `train` so that you can visualize how the performance of the model depends on these two tuning parameters.
+
+```{r Task1.4a}
+nnetGrid <- expand.grid(size=1:4,decay=10^( seq(-2,.5,by=.5) ) )
+set.seed(474); NNET <- train(Usage~.,data=ELECTRICITY,method="nnet", trControl=fitControl,tuneGrid=nnetGrid,preProc=c("center","scale"),trace=FALSE,linout=TRUE)
+plot(NNET)
+```
+
+b.  Find the four most important predictors according to your tuned neural network, then manually fit that neural network with `neuralnet` (from the `neuralnet` library) with the suggested number of hidden neurons.  Provide a plot of this neural network, and report the equation for the weighted sum of these four predictor variables (plus intercept) that is being fed into the top-most neuron.  Make sure to have `set.seed(474)` on the same line just before running `neuralnet`.
+
+```{r Task1.4b}
+library(neuralnet)
+varImp(NNET)
+set.seed(474); NNET <- neuralnet(Usage~q3+HoursBelow65+heatinghours+mean,data=ELECTRICITY,hidden=2,linear.output = TRUE) 
+plot(NNET,rep="best")
+```
+
+**Response:** : TOP Neuron: -0.27+0.16475q3-0.11644HoursBelow65-0.05963heatinghours-1.55387mean;
+
+
+
+
+5.  In homework 8, you fit a bunch of other models, and code to do so is reproduced here (but not run because of time constraints and because parallelization has been written in).  Although the code isn't run here, you would have found the following estimated generalization errors along with their standard deviations.  If you had to choose one of the models considered so far (last homework or this one), which would you choose?  Does the one standard deviation rule eliminate any model from consideration?
+
+```{r Task1.5 other models,eval=FALSE}
+library(parallel)
+library(doParallel)
+
+cluster <- makeCluster(detectCores() - 1, outfile = "") 
+registerDoParallel(cluster)
+fitControl <- trainControl(method = "cv",number = 5, allowParallel = TRUE, verboseIter = FALSE)
+
+set.seed(474); GLM <- train(Usage~.,data=ELECTRICITY,method="glm", trControl=fitControl,preProc = c("center", "scale"))
+GLM$results #0.3615895924; SD 0.005726665437
+
+glmnetGrid <- expand.grid(alpha = seq(0,1,.1),lambda = 10^seq(-5,-2,length=30))   
+set.seed(474); GLMNET <- train(Usage~.,data=ELECTRICITY,method="glmnet",trControl=fitControl,
+                               tuneGrid=glmnetGrid,preProc = c("center", "scale"))
+GLMNET$results[rownames(GLMNET$bestTune),]  #0.3614720753; SD 0.006148500936
+
+knnGrid <- expand.grid(k=c(1,10,50,100,150))
+set.seed(474); KNN <- train(Usage~.,data=ELECTRICITY,method="knn",trControl=fitControl,
+                            tuneGrid=knnGrid,preProc = c("center", "scale"))
+KNN$results[rownames(KNN$bestTune),]  #0.3613597021; SD 0.004356352733
+
+rpartGrid <- expand.grid(cp=10^seq(-4,-2,length=50))
+set.seed(474); RPART <- train(Usage~.,data=ELECTRICITY,method="rpart",trControl=fitControl,
+                              tuneGrid=rpartGrid,preProc = c("center", "scale"))
+RPART$results[rownames(RPART$bestTune),]  #0.3616626804; SD 0.004882515113
+
+forestGrid <- expand.grid(mtry=c(1,2,4,12))
+set.seed(474); FOREST <- train(Usage~.,data=ELECTRICITY,method="rf",trControl=fitControl,
+                               tuneGrid=forestGrid,preProc = c("center", "scale"))
+FOREST$results[rownames(FOREST$bestTune),]  #0.3641280955; SD 0.003522502932
+
+stopCluster(cluster)
+registerDoSEQ()
+
+```
+
+**Response:**  I will choose the KNN model, because its RMSE is smallest.  Based on one standard deviation rule, RMSE of all other models are within one standard deviation to that of KNN model, so one standard deviation rule does not eliminate any model from consideration. 
+
+
+
+
+
+
+***************
+***************
+***************
+
+##Task 2:  Classification
+
+The `telcochurn.csv` datafile contains a small part of a customer database from a telecommunications company and you have worked with it before.  The goal is to predict the probability that a customer will churn based on his or her interaction with the company, money spent, etc.  They would like a model that's capable of picking out the top 500 customers most likely to churn.
+
+```{r Task2}
+TELCO <- read.csv("telcochurn.csv")
+```
+
+We will use the data as-is (no transforming; but we'll scale from within `train`), and will once again use the entirety of the data when estimating the generalization errors of different models.  We lose the ability to have an independent assessment of the generalization error of the model on a holdout sample.
+
+```{r Task 2 churnmodels,eval=FALSE}
+library(parallel)
+library(doParallel)
+
+cluster <- makeCluster(detectCores() - 1, outfile = "") 
+registerDoParallel(cluster)
+
+fitControl <- trainControl(method="cv",number=5,classProbs=TRUE,summaryFunction = twoClassSummary,
+                           verboseIter = FALSE, allowParallel = TRUE) 
+set.seed(474); GLM <- train(Churn~.,data=TELCO,method="glm",metric="ROC",trControl=fitControl,
+                            preProc = c("center", "scale"))
+GLM$results #0.8450741742 SD 0.01834519
+
+rpartGrid <- expand.grid(cp=10^seq(from=-5,to=-3,by=0.02))
+set.seed(474); RPARTfit <- train(Churn~.,data=TELCO,method="rpart",metric="ROC",trControl=fitControl,
+                                 tuneGrid=rpartGrid,preProc = c("center", "scale"))
+RPARTfit$results[rownames(RPARTfit$bestTune),]   #0.8053212405 SD 0.02049367
+
+forestGrid <- expand.grid(mtry=c(1,6,19))  
+set.seed(474); FORESTfit <- train(Churn~.,data=TELCO,method="rf",metric="ROC",trControl=fitControl,
+                                  tuneGrid=forestGrid,preProc = c("center", "scale"))
+FORESTfit$results #0.8320305751 SD 0.01743918
+
+stopCluster(cluster)
+registerDoSEQ()
+
+```
+
+a.  Set up `gbmGrid` so that the following parameter combinations are considered (use `expand.grid`):
+
+* `n.trees` of 1000, 2000
+* `shrinkage` of 0.005, 0.01
+* `interaction.depth` of 1, 2, 3
+* `n.minobsinnode` of 5, 10
+
+Estimate the generalization errors of these models using `train` (with `set.seed(474)` on the same line as `train` immediately before the command); put `preProc = c("center", "scale")` as an additional argument (even though for this model it isn't completely necessary).  Left-arrow the output of `train` to `GBMfit` and copy/paste *into the R chunk* (hashtag each of these lines of code) the output of running:
+
+`head( GBMfit$results[order(GBMfit$results$ROC,decreasing=TRUE),c(1:5,8)], 5 )` 
+
+This gives the "top 10" models based on AUC.
+
+Note:  the `train` command will take a very long time (my mid 2015 Macbook Pro took almost 10 minutes with no parallelization; significantly faster with it).  That is why I set up the chunk to have `eval=FALSE`, so that the code will be included in your writeup, but not officially evaluated (otherwise knitting would take just as long to complete).  This is why you need to copy/paste the output into the chunk.  Report the highest estimated AUC and its standard deviation.
+
+```{r Task2.a,eval=FALSE}
+gbmGrid <- expand.grid(n.trees=c(1000,2000),interaction.depth=1:3,shrinkage=c(.005,.01),n.minobsinnode=c(5,10))
+fitControl<-trainControl(method = "cv",number = 5,classProbs = TRUE,summaryFunction = twoClassSummary,verboseIter = FALSE,allowParallel = TRUE)
+set.seed(474); GBMfit <- train(Churn~.,data=TELCO,method="gbm",
+                                            trControl=fitControl,
+                                            metric="ROC",
+                                            tuneGrid=gbmGrid,verbose=FALSE,
+                                            preProc = c("center", "scale"))
+head( GBMfit$results[order(GBMfit$results$ROC,decreasing=TRUE),c(1:5,8)], 5 )
+```
+
+
+b.  Fit the model using `gbm` with the suggest set of parameters and leftarrow it into an object called `GBM`.  Run `summary` on `GBM`, then provide plots of how the model is treating the relationship between the probability of churning and the first and second most important predictors.   Remember to use `gbm` you have to create a copy of the training data just for the procedure and convert the column we are predicting to numbers.  See notes and activity.
+
+```{r Task2.b}
+library(doParallel)
+TELCO.GBM <- TELCO  #Make a copy just for gbm
+TELCO.GBM$Churn <- as.numeric(TELCO.GBM$Churn) - 1 #yes = 1, no = 0
+set.seed(474);GBM <- gbm(Churn~.,data=TELCO.GBM,distribution="bernoulli",n.trees=2000,interaction.depth=3,shrinkage=0.005,n.minobsinnode = 10)
+summary(GBM) 
+plot(GBM,"Contract",type="response")  
+plot(GBM,"tenure",type="response")  
+```
+
+c.  Let's explore a neural network with a single hidden layer.  Use the following grid to tune on the number of neurons that go into the hidden layer (`size`) and the regularization parameter (`decay`:  the penalty to giving large weights to any predictor).   Make sure to add the argument `preProc = c("center", "scale")` to `train` here since neural networks require scaling of the predictor variables, add `trace=FALSE` so that you don't get buried in output, and make sure that `linout=FALSE` since we are doing classification.  
+
+Include the output of running `NNET$results[rownames(NNET$bestTune),] ` (printing out the best row).  You should that the selected value of `size` is 1.  TRUE or FALSE and explain:  a neural network with a single neuron in its hidden layer that uses the logistic activation function is basically a regularized logisitic regression model.
+
+```{r Task2.c}
+nnetGrid <- expand.grid(size=1:3,decay=10^( seq(-2,1,by=.5) ) )
+fitControl<-trainControl(method = "cv",number = 5,classProbs = TRUE,summaryFunction = twoClassSummary,verboseIter = FALSE,allowParallel = TRUE)
+set.seed(474); NNET <- train(Churn~.,data=TELCO,method="nnet", trControl=fitControl,tuneGrid=nnetGrid,preProc=c("center","scale"),trace=FALSE,linout=FALSE)
+NNET$results[rownames(NNET$bestTune),]
+```
+
+**Response:**  TRUE, When the perceptron uses the logistic activation function, the end result is logistic regression, which we can use the model the probability an individual possesses one of two classes. When the perceptron becomes a neural network with only one neuron in its hidden layer, the output becomes a probability of 0 or 1 being fed into the neuron and that resmebles a regularized logistic regression model. 
+
+
+
+
+
+d.  Tune a support vector machine that uses the radial basis kernel (`method=svmRadial`) with the following tuning parameters (I've pretuned it so a good model lurks within these four parameter combinations, but it still takes a fair amount of time).  Show the results of running `SVM$results[rownames(SVM$bestTune),]`, assuming you left-arrowed the object created by `train` into `SVM`.  Once again, make sure to add the argument `preProc = c("center", "scale")` to `train` here since SVMs require scaling of the predictor variables.
+
+```{r Task2.d,warning=FALSE}
+library(doParallel)
+svmGrid <- expand.grid(sigma=10^seq(-4,-2,by=1),C=10^seq(-2,0,by=.5) ) 
+fitControl <- trainControl(method="cv",number=5)
+set.seed(474); SVM <- train(Churn~., data=TELCO, method="svmRadial", trControl=fitControl, verbose=FALSE, tuneGrid=svmGrid, preProc = c("center", "scale"))
+SVM$results[rownames(SVM$bestTune),]
+```
+
+
+
+
+
+
+##Task 3:  Bias-Variance Tradeoff
+
+The "tuning parameters" associated with all the models we have studied all us to pick the right "form" of the model, i.e., the one that generalizes the best.  In effect, it is determining the best tradeoff between the bias and variance of the model.  It's important to understand how the choice of tuning parameter mediates this tradeoff.
+
+a.  If `n.hidden` is the number of neurons in the hidden layer of a neural network, and if `p` is the number of predictor variables, then develop a formula that relates the total number of parameters estimated from the data and these two values.  In other words, I want an equation that, when you plug in the relevent values of `n.hidden` and `p`, you get the number of parameters that have to be estimated.  Hint:  remember that each neuron in the hidden layer is fed a weighted sum of the predictor variables plus an additional offset/intercept term, each of these values have be estimated.  Also remember that the outputs from the neurons in the hidden layer are combined in terms of a weighted sum, plus an additional offset/intercept term, in order to come up with a final prediction.  Evaluate your expression if `p=15` and `n.hidden=5`.
+
+**Response:** (1+p)n.hidden + n.hidden+1 = 1 + (2+p)n.hidden??? If p = 15, n.hidden = 5, the expression would be 86.
+
+
+b.  The number of predictors `p` that we use in the model is a choice.  As we increase the value of `p`, what happens to the bias of the resulting model?  What happens to the variance?  Hint:  remember to think of bias in terms of how well the model fits the training data, and variance as a measure of how much information is being extracted from individuals in the training data (each additional parameter that needs to be estimated requires an additional bit of information from the data).
+
+**Response:**  As the number of predictors increases, the bias of model decreases and the variance of model increases. 
+
+
+
+b.  The number of hidden layers `n.hidden` is also choice.  As we increase the value of `n.hidden`, what happens to the bias of the resulting model?  What happens to the variance? 
+
+**Response:**  Bias decreases and variance increases. 
+
+
+
+c.  How can we determine the "right" values for these two parameters for the particular problem we want to solve?
+
+**Response:**  Combining different value of p and n.hidden, using cross-validation to estimate the lowest generalization error and choosing a lowest one or any other models which are within 1 SD. 
+
+
+
+
+
+
+
+##Task 4:  programming a kernel
+
+The "kernel" in a support vector machine algorithm provides a way to project the data into a higher-dimensional space, where maybe a very simple model is able to separate one class from each other or to predict the numerical value of `y`.  It turns out the solution to these simple models depend only on the entries to a "kernel matrix".  If `n` is the number observations in the data, then the kernel matrix has `n` rows and `n` column, and the value in the i-th rows and j-th column `K[i,j]` is given by some equation that compares the individual in row i of the data to the individual in row j of the data.  Which equation we use dictates just how the data gets projected into the higher dimensional space.
+
+For this example, let's use as our equation `K[i,j] = mean( (x.i-x.j)^2 )`.  In other words, if `x.i` is the vector of values of the predictor variables of the individual in row i, and if `x.j` is the vector of values of the predictor variables of the individual in row j, then `K[i,j]` is the average squared difference in the predictor variables.
+
+Write a nested `for` loop to define each element of `K` for the following dataframe of predictor variables (`TEST`) and verify your entries.  Then find the kernel matrix for `DATA` defined by the command below and show `dim(K)`, `hist(K)`, and `median(K)`.
+
+```{r Task 4 kernel}
+TEST <- data.frame( var1=c(3.4,1.2,-0.4), var2=c(-3.3,1.8,0.5) )
+K <- matrix(0,nrow(TEST),nrow(TEST))
+for (i in 1:nrow(TEST)) {
+  for (j in 1:nrow(TEST)) {
+    K[i,j]<-mean((TEST[i,]-TEST[j,])^2)
+  }
+}
+#K
+#       [,1]   [,2]   [,3]
+#[1,]  0.000 15.425 14.440
+#[2,] 15.425  0.000  2.125
+#[3,] 14.440  2.125  0.000
+DATA <- as.data.frame(scale(mtcars))
+K <- matrix(0,nrow(DATA),nrow(DATA))
+for (i in 1:nrow(DATA)) {
+  for (j in 1:nrow(DATA)) {
+    K[i,j]<-mean((DATA[i,]-DATA[j,])^2)
+  }
+}
+dim(K)
+hist(K)
+median(K)
+```
+
+
+

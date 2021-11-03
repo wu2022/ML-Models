@@ -1,0 +1,314 @@
+---
+title: "Assignment 11 - Clustering"
+author: "Xuzhi Wu"
+date: "Due Thursday Nov 30 end of day"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,collapse=TRUE)
+options(width=120)
+
+scale_dataframe <- function(DATA,except=NA) {
+  column.classes <- unlist(lapply(DATA,FUN=class))  
+  numeric.columns <- which(column.classes %in% c("numeric","integer"))  
+  if(!is.na(except)) { 
+    exemptions <- which( names(DATA) %in% except )
+    if ( length(exemptions)>0 ) { numeric.columns <- setdiff(numeric.column,exemptions) } }
+  if( length(numeric.columns)==0 ) { return(DATA) }
+  DATA[,numeric.columns] <- as.data.frame( scale(DATA[,numeric.columns]) )
+  return(DATA)
+}
+```
+
+
+##Question 1:  Clustering Kroger Customers
+
+One of the key concerns of business analytics practitioners is to ensure that the right products are being sold to the right customers at the right price and at the right time.
+
+
+Consider `KrogerSpending.csv`.  This dataset contains the spending habits of 2500 customers at Kroger over the span of 2 years (this is why Kroger has a loyalty card; so it can track purchases over time!).  Specifically, it gives the *total amount of money each customer has spent on 13 broad categories of items* (alcohol, baby, meat, etc.).  Kroger would like to do some segmentation and cluster analysis to discover if there are "customer types"?  For example:
+
+* House-spouses that takes care of both the cooking and grocery shopping?
+
+* College students who buys cheap food and drinks that require minimal preparation?
+
+* Parents of newborns?
+
+* Casual shoppers buying products here and there?
+
+* Health-conscious shoppers?
+
+* Extreme couponers?
+
+The groups above may indeed exist, and if so, Kroger could fine-tune marketing and advertising campaigns to meet the needs of each group.  This is a much more effective strategy than using a single campaign designed for everyone.  However, we need to let the data suggest what clusters exist in the data instead of inventing nice-sounding groups of our own.
+
+
+1)  Read in the data file and left-arrow it to `KROGER`.   Explore the data.  Run `summary` and include a histogram of one of the columns.  What is it about the distributions of amounts that make it inappropriate to use them as-is to design a clustering scheme? 
+
+```{r data reading in and investigation}
+KROGER<-read.csv("KrogerSpending.csv")
+summary(KROGER)
+sum(complete.cases(KROGER)) / nrow(KROGER)
+hist(KROGER$ALCOHOL)
+```
+
+**Response::**  The variables are on different scales and the distribution is extremely skewed. And variables are on the different scales. 
+
+
+
+2)  Create `KROGER.SCALED` by first left-arrowing the result of running `log10(KROGER+1)` into `KROGER.SCALED` (you should remind yourself why the equation has a +1 here), then scaling its columns with `as.data.frame(scale())` to ensure that characteristic has a mean of 0 and a standard deviation of 1.  Run `apply(KROGER.SCALED,2,mean)` and `apply(KROGER.SCALED,2,sd)` to verify scaling has been done.  
+
+Provide a histogram (`hist()`) and a kernel density estimate (`plot(density())`, adding arguments `xlim=c(-3,3),ylim=c(0,1)` to make the presentation clearer) of one of the columns to convince yourself that it is now more appropriate to do clustering.
+
+```{r data prep}
+KROGER.SCALED<-log10(KROGER+1)
+KROGER.SCALED<-as.data.frame(scale(KROGER.SCALED))
+apply(KROGER.SCALED,2,mean)
+apply(KROGER.SCALED,2,sd)
+hist(KROGER.SCALED$ALCOHOL)
+plot(density(KROGER.SCALED$HEALTH),xlim=c(-3,3),ylim=c(0,1))
+```
+
+
+
+
+3)  Let's try k-means clustering.  First, we need to determine a reasonable value for the number of clusters.  Using `KROGER.SCALED`, explore values of `k` from 1 to 15, taking `iter.max=25` (the number of updates the cluster centers before the algorithm terminates, assuming it doesn't terminate naturally) and `nstart=100` (100 re-starts, with each trying a different random location for cluster centers).  Make a plot of the total within-cluster sum of squared errors (WCSS) vs. `k`.  Note:  the 100 restarts will make the algorithm take a few seconds to run, but it gives us a high probability of finding the scheme where the sum of squared distances of individuals from the cluster centers is indeed the smallest possible value.
+
+```{r k means choosing k}
+WCSS <- c()
+possible.k <- 1:15
+set.seed(474) 
+for (i in possible.k) {
+best.SS <- kmeans(KROGER.SCALED,center=i,iter.max=25,nstart=100)$tot.withinss 
+WCSS[i] <- best.SS 
+}
+plot(WCSS~possible.k,pch=20,cex=2)
+```
+
+
+**Based on the plot, what do you think is a reasonable choice for k?**
+
+**Response:** There is no obvious choice of k because the within-cluster sum of squares continues to decrease as the number of clusters grows. Since without a well-defined "elbow", any choices between 4 to 8 seem reasonable. Any k value more than k=8 will result so many clusters which will be difficult to interpret. Anything fewer than k=4 will miss some important structure in the data. Therefore, I will go with 6; There is a drop in WCSS from 5-6 clusters, so we can almost surely say that having 6 clusters will be more useful than 5; 
+
+
+
+
+
+4)  Regardless of whether you think a different value is more reasonable (remember, every value of k gives a valid clustering scheme, just some will end up making more sense than others), let's choose k=3.  Run `kmeans` with k=3, `iter.max=25`, and `nstart=100`), left-arrowing the results in `KMEANS`.
+
+Create a copy of `KROGER.SCALED` called `THREE.FINAL` and a copy of `KROGER` called `THREE.RAW`.   Add columns called `ID` to these dataframes which contain the final cluster identities of each customer (which can be extracted from the result of running kmeans via `KMEANS$cluster`).
+
+Provide a frequency table of the number of people in each cluster.
+
+```{r k means with k of 3}
+KMEANS<-kmeans(KROGER.SCALED,centers=3, iter.max=25, nstart=100)
+THREE.FINAL<-KROGER.SCALED
+THREE.RAW<-KROGER
+THREE.FINAL[,14]<-KMEANS$cluster
+colnames(THREE.FINAL)[14]<-"ID"
+THREE.RAW[,14]<-KMEANS$cluster
+colnames(THREE.RAW)[14]<-"ID"
+table(KMEANS$cluster)
+```
+
+
+5)  Obtaining cluster identities is the end result of the clustering algorithm but it is just the jumping off point for doing analytics!  Show the results of running the `aggregate` function to find the median values of each column in `THREE.RAW` for all  three cluster identities, and do the same to find the mean values of each column in `THREE.FINAL` (now is a good time to remind your self why we always use the mean for transformed/scaled versions but the median on the raw values).  It may be useful to `round( aggregate(...), digits=2 )` so that you aren't overwhelmed by output.  
+
+```{r averages for each cluster}
+round(aggregate(.~ID,data=THREE.RAW,FUN=median), digits=2)
+round(aggregate(.~ID,data=THREE.FINAL,FUN=mean), digits=2 )
+```
+
+
+
+
+6)  Kroger wanted to use the cluster identities to customers offers for specific segments of its customer base (e.g., people who cook, people with pets, people with babies, etc.).  While the clustering scheme we just found is valid from a technical algorithmic point of view, the end result is not very interesting, and definitely not useful for Kroger's application.  Looking at the means/medians of each cluster, determine what's really differentiating one cluster from another, then explain why Kroger would not find this clustering scheme useful.
+
+**Response:**  
+Cluster 1 - Below averages spenders in all products like alcohol, babe, cooking, etc.
+Cluster 2 - Above average spenders in all products like alcohol, babe, cooking, etc.
+Cluster 3 - Low value clients,  Below averages spenders in all products.
+We should rethink this model, because all these 3 clusters only help with distnguishing customer segments of below or above average buying habbits(just the amounts) not the type. The price of each category product is different, so the amounts cannot give us the index of which category customers bought the most and the least.
+
+
+
+
+
+
+
+7)  How can we "fix" the clustering scheme if the clusters were valid from a technical point of view?  One option is to re-think how we are measuring "similarity" between customers.  The previous scheme developed clusters based on the *amounts* people spend on each of these 13 categories.  For targeted advertising, it probably makes more sense to cluster on the *fraction* of the total money spent by the customer on each of the categories.  If we find a segment that spends a much larger fraction of their shopping budget on baby items, we can target them with baby-specific promotions, etc.  
+
+Copy `KROGER` (whose contents shouldn't have been modified since the data was read in) into a data frame called `FRACTION`.  Then, write a `for` loop that goes through each row of the data and replaces the values with the fraction of the row total.  For example if `x` is a vector of the 13 amounts, then `x/sum(x)` would be a vector giving the 13 fractional amounts.
+
+Verify that the sum of each row of `FRACTION` is 1 (i.e., print to the screen the result of running `summary(apply(FRACTION,1,sum))`, which translated into English means "summarize the row totals of each row of the `FRACTION` dataframe").
+
+```{r fraction}
+FRACTION<-KROGER
+for (i in 1:ncol(KROGER)){
+   for (n in 1:nrow(KROGER)){
+     FRACTION[n,i]<-KROGER[n,i]/sum(KROGER[n,])
+   }
+}
+summary(apply(FRACTION,1,sum))
+```
+
+
+8)  Before clustering, there is always data processing that must be done.  In this case, we know the values in a row are going to add up to 1, so one of the columns of `FRACTION` is redundant!  The `OTHER` category is perhaps the least interesting, so:
+
+* NULL out the `OTHER` column from `FRACTION`
+
+* left-arrow the result of running `scale_dataframe( log10(FRACTION+0.01) )` (so we aren't taking the log of 0; thought question for you:  why .01 and not 1 here?) into `FRACTION.SCALED`
+
+Run `summary` on `FRACTION.SCALED$BABY` (have output included) and verify you get the following results.
+
+```{r processing again}
+FRACTION$OTHER<-NULL
+FRACTION.SCALED<-scale_dataframe( log10(FRACTION+0.01) )
+summary(FRACTION.SCALED$BABY)
+
+#Summary of FRACTION.SCALED$GRAIN
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#-2.9153 -0.5517  0.0510  0.0000  0.5822  4.4068 
+
+```
+
+
+
+9)  Instead of running `kmeans` to get clusters, let's try hierarchical clustering this time.  Run `hclust` with the defaults (remember the argument is the distance matrix of the dataframe created by `dist`, not the dataframe itself) and left-arrow the result into `HC`.  Plot the (really ugly) dendrogram.  Note:  a `TEXT_SHOW_BACKTRACE environmental variable` is not an error but an indication that it's a wise idea to clear out all plots that have been made so far (broom icon in the plot window).
+
+```{r hierarchical clustering}
+HC <- hclust( dist(FRACTION.SCALED))
+plot(HC)
+```
+
+
+10)  The default method in `hclust` for merging clusters is "complete linkage", where the distance between two clusters is taken to the *largest* distance between any two pairs of points from different clusters.  Different ways of defining "distance" between clusters give different-looking dendrograms and different overall clustering schemes.  Provide the dendrogram when using `method="ward.D2"`.  I think you'll like this presentation better.  Note:  there is also a "ward.D" for method, but DO NOT USE THIS (it assumes the entries in the distance matrix are the squared values of the Euclidean distance, and they are not).
+
+In the response below, explain how `ward.D2` measures the "distance" between two clusters.
+
+```{r hierarchical clustering with ward.D2}
+HC1 <- hclust( dist(FRACTION.SCALED),method="ward.D2" )
+plot(HC1)
+```
+
+**Response:**  Ward.D2 measures dissimilarity as the increase in the the sum of squared distances between individuals and the cluster centers when the clusters are merged.
+
+
+
+
+
+
+11)  The number of clusters we should pick is once again debatable.  Personally, my eye is drawn to a choice of 5 (there's a long period where no merging occurs from heights of 40-50).   Probably the best way to choose is would be to look at 3 clusters (the splitting from 2 to 3 clusters happens over a small Height, so it doesn't make sense to do 2) and characterize the clusters.  If all 3 clusters are useful, then examine a scheme with 4 clusters (with hierarchical cluster, one of the 3 clusters will be split into two).  If the 4th cluster adds something meaningful to the analysis, then try 5 clusters, etc.
+
+For the sake of illustration, let's just choose 4 (using `method="ward.D2"`).  Use `cutree` and left-arrow the cluster identities into a vector called `IDs`.  Create a copy of `FRACTION.SCALED` called `FOUR.FINAL` and a copy of `FRACTION` called `FOUR.RAW`, and add the cluster identities to them with columns called `ID`.
+
+Using `aggregate`, find the median value of each column in `FOUR.RAW` and the average value of each column in `FOUR.FINAL`. Print these to the screen (round to 2 digits).
+
+```{r hierarchical clustering results}
+IDs <- cutree(HC1,k=4)
+FOUR.FINAL<-FRACTION.SCALED
+FOUR.RAW<-FRACTION
+
+FOUR.FINAL[13]<-IDs
+colnames(FOUR.FINAL)[13]<-"ID"
+FOUR.RAW[,13]<-IDs
+colnames(FOUR.RAW)[13]<-"ID"
+
+round( aggregate(.~ID,data=FOUR.RAW,FUN=median),digits=2)
+round( aggregate(.~ID,data=FOUR.FINAL,FUN=mean),digits=2)
+```
+
+
+
+
+12)  This clustering scheme is much more interesting and useful to Kroger.  Characterize each of the 4 clusters with a short, meaningful description (e.g., fast-food junkies who spend most of their money on snacks and prepared food).
+
+* Cluster 1 - Alcohol fans, with above average values of health and household (vitamins to cure hangovers and cleaning supplies to clean up drunken messes?)
+
+* Cluster 2 - Baby owners
+
+* Cluster 3 - Cooks (above average values of cooking, fruitveg, grain, meat)
+
+* Cluster 4 - Thirsty.  The casual shopper that buys mostly drinks.
+
+
+13)  There's opportunity in these four clusters for Kroger to target advertising for sure.  Does adding a 5th cluster yield additional insight?  Using the same hierarchical clustering object, determine which of these 4 clusters gets split in two, and make a judgment call on whether the results are useful.
+
+```{r adding cluster}
+FIVE.FINAL <- FRACTION.SCALED
+FIVE.FINAL$ID <- cutree(HC, k=5)
+
+FIVE.RAW <- FRACTION
+FIVE.RAW$ID <- cutree (HC, k=5)
+
+round(aggregate(.~ID,data=FIVE.RAW,FUN=median), digits=2)
+round(aggregate(.~ID,data=FIVE.FINAL,FUN=mean), digits=2)
+```
+
+**Response:**  For the cluster 5, all variables (spenders) are below average, except for Health (spender) which is slightly larger than average.It means the behavior of spenders in 5th clusters tend to shop healthy food. Therefore, adding a 5th cluster yield additional insight.
+
+
+
+
+
+
+
+###Question 2:
+
+a)  The distributions of variables are typically scaled before clustering takes place.  Why is that and what might happen if they are not scaled?
+
+**Response:** The distributions of the variables need to be on the same scale so each variable counts the same amount towards the measure of distance, so if they are not scaled, the clustering scheme is sensitive to outliers with large values of the characteristics.
+
+
+b)  Often, the distributions of variables we want to use to discover clusters are quite skewed.  If we don't try to symmetrize the distributions of these variables, and just calculate distances based on the original values, what problem might arise?  In other words, what might be "bad" about the resulting clusters?
+
+**Response:** the distributions need to be symmetric so that the clustering scheme isn't sensitive to outliers with large values of the characteristics. If we do not try to symmetrize the distributions of these variables, the result we get will be influenced unequally by the larggest or smallest value (outliers) from other normal values. It will raise huge bias of result.  
+
+
+
+c)  When running `kmeans`, we often set `nstart=50` (or some other value) instead of leaving it set to the default `nstart=1`.  Why is this the case?
+
+**Response:**  setting nstart higher such as nstart=50, which will random initialize centers and choose the one that minimize better the cost; therefore we end up with a much more stable clusters because of kmeans always choose the better separation. If we let the default nstart=1, this will only let us have one random initial center.
+
+
+
+d)  The vertical axis on dendrograms is labeled "Height" which I think is a bit of a misnomer.  What does "Height" refer to if the merging criteria is "complete linkage"?  What about "single linkage"?  In other words, if we see two clusters merge at a "Height" of 10, what does that tell us?
+
+**Response:**  The Height of clusters tells us the "distance" between them when they merged. So if we see two cluster merge at a height of 10 which tells us that the distance between them are 10.
+
+
+
+
+e)  When clustering, you'll try kmeans with a few values of k, you'll look at a few hierarchical clustering schemes, and maybe a few other schemes.  How do you know which choice of clustering scheme is correct?
+
+**Response:** It depends on what task we are working on. And the clusters are useful for the type of analysis that needs to be done. 
+
+
+
+
+
+
+
+
+
+###Question 3:  Hierarchical clustering process
+
+Below is the distance matrix for a dataset with 5 individuals.  We see that individuals 2 and 4 are separated by a distance of 5.6.  Individuals 5 and 1 are separated by a distance of 9.7, etc.  When hierarchical *complete-linkage* clustering takes places, each individual starts out in their own cluster, then clusters get merged together.   **What is the order in which individuals/clusters get merged?**   Note:  you will want to have a piece of scratch paper and write out how it proceeds.  It's nearly impossible to just look at the matrix and figure it out.
+
+```{r hc,eval=FALSE}
+  2    3    4    5
+1 6.5  6.0  8.9  9.7
+2      3.7  5.6  5.1
+3           9.1  8.7
+4                1.8
+```
+
+Note:  I expect an answer like:   1.  1-2 get merged together;   2.  3-5 get merged together;  3.  The 1/2 and 3/5 clusters get merged together;   4. the 1/2/3/5 cluster and 4 get merged together.
+
+
+**Response:**1. 4-5 get merged together; 2. 2-3 get merged together; 3. 1 and 2/3 clusters get merged together; 4. 4/5 cluster and 1/2/3 cluster get merged together.
+
+
